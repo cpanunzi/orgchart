@@ -124,12 +124,16 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   const [loadError, setLoadError] = useState(null);
   const fileInputRef = useRef(null);
   const saveTimer = useRef(null);
-  const skipNextRemoteRef = useRef(false);
-  const localUpdatedAtRef = useRef(null);
+  const hasLoadedRef = useRef(false);
+  const isDirtyRef = useRef(false);
+  const lastSavedAtRef = useRef(0); // ms timestamp of last local save we initiated
+  const lastAppliedRemoteAtRef = useRef(0); // ms timestamp of last remote update we applied
 
   // initial load
   useEffect(() => {
     let cancelled = false;
+    hasLoadedRef.current = false;
+    isDirtyRef.current = false;
     (async () => {
       const { data, error } = await supabase
         .from("charts")
@@ -140,7 +144,10 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
       if (error) { setLoadError(error.message); return; }
       setName(data.name);
       setTree(data.tree);
-      localUpdatedAtRef.current = data.updated_at;
+      lastAppliedRemoteAtRef.current = new Date(data.updated_at).getTime();
+      // mark as loaded on the next tick, AFTER the tree state is applied
+      // so the save effect doesn't fire on initial hydration
+      setTimeout(() => { hasLoadedRef.current = true; }, 0);
     })();
     return () => { cancelled = true; };
   }, [chartId]);
@@ -152,10 +159,19 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
       .on("postgres_changes",
         { event: "UPDATE", schema: "public", table: "charts", filter: `id=eq.${chartId}` },
         (payload) => {
-          if (skipNextRemoteRef.current) { skipNextRemoteRef.current = false; return; }
           const remote = payload.new;
-          if (remote.updated_at === localUpdatedAtRef.current) return;
-          localUpdatedAtRef.current = remote.updated_at;
+          const remoteTs = new Date(remote.updated_at).getTime();
+
+          // ignore echoes of our own recent saves (within 3s)
+          if (Math.abs(remoteTs - lastSavedAtRef.current) < 3000) return;
+
+          // ignore stale or duplicate updates
+          if (remoteTs <= lastAppliedRemoteAtRef.current) return;
+
+          // if we have unsaved local edits in flight, don't clobber them
+          if (isDirtyRef.current || saveTimer.current) return;
+
+          lastAppliedRemoteAtRef.current = remoteTs;
           setTree(remote.tree);
           setName(remote.name);
         })
@@ -165,29 +181,35 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 
   // debounced save
   const scheduleSave = useCallback((nextTree, nextName) => {
+    isDirtyRef.current = true;
     setSaveStatus("saving");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      const updates = {};
+      const nowIso = new Date().toISOString();
+      lastSavedAtRef.current = Date.now();
+      const updates = { updated_at: nowIso };
       if (nextTree !== undefined) updates.tree = nextTree;
       if (nextName !== undefined) updates.name = nextName;
-      updates.updated_at = new Date().toISOString();
-      skipNextRemoteRef.current = true;
       const { data, error } = await supabase
         .from("charts")
         .update(updates)
         .eq("id", chartId)
         .select("updated_at")
         .single();
+      saveTimer.current = null;
       if (error) { setSaveStatus("error"); return; }
-      localUpdatedAtRef.current = data.updated_at;
+      const savedTs = new Date(data.updated_at).getTime();
+      lastSavedAtRef.current = savedTs;
+      lastAppliedRemoteAtRef.current = Math.max(lastAppliedRemoteAtRef.current, savedTs);
+      isDirtyRef.current = false;
       setSaveStatus("synced");
     }, 600);
   }, [chartId]);
 
-  // save tree changes
+  // save tree changes (but not on initial hydration)
   useEffect(() => {
     if (tree === null) return;
+    if (!hasLoadedRef.current) return;
     scheduleSave(tree, undefined);
   }, [tree, scheduleSave]);
 
