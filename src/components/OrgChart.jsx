@@ -1,7 +1,21 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { ChevronDown, ChevronRight, Plus, Trash2, Download, Upload, Users, Search, RotateCcw, FileDown, ArrowLeft, Edit2 } from "lucide-react";
+import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from "react";
+import { ChevronDown, ChevronRight, Plus, Trash2, Download, Upload, Users, Search, RotateCcw, FileDown, ArrowLeft, Edit2, Spline, X } from "lucide-react";
 import { supabase } from "../lib/supabase.js";
 import { sharedStyles } from "./styles.js";
+
+// ---------- matrix accents ----------
+// Optional per-card colour role. Keys are stored on nodes as `accent`.
+// A missing/`"slate"` accent is the neutral default, so old charts render unchanged.
+const ACCENTS = {
+  slate:  { label: "Neutral",         color: "#6b6252" },
+  blue:   { label: "Resource owner",  color: "#3b6ea5" },
+  purple: { label: "Platform",        color: "#6d5aa8" },
+  red:    { label: "Client / GM",     color: "#b8442a" },
+  green:  { label: "Support",         color: "#5b7a3f" },
+  amber:  { label: "Advisory",        color: "#b07d2a" },
+};
+const ACCENT_KEYS = Object.keys(ACCENTS);
+const accentColor = (key) => (ACCENTS[key] || ACCENTS.slate).color;
 
 // ---------- helpers ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -17,6 +31,17 @@ const isDescendant = (root, ancestorId, id) => {
 };
 const cloneTree = (n) => JSON.parse(JSON.stringify(n));
 const updateNode = (root, id, patch) => { const n = cloneTree(root); walk(n, (x) => { if (x.id === id) Object.assign(x, patch); }); return n; };
+const collectIds = (node) => { const s = new Set(); walk(node, (n) => s.add(n.id)); return s; };
+
+// Drop any dotted link whose target no longer exists in the tree.
+const pruneDottedLinks = (root) => {
+  const alive = collectIds(root);
+  walk(root, (n) => {
+    if (n.dotted && n.dotted.length) n.dotted = n.dotted.filter((d) => alive.has(d.to));
+  });
+  return root;
+};
+
 const removeNode = (root, id) => {
   if (root.id === id) return root;
   const next = cloneTree(root);
@@ -25,7 +50,37 @@ const removeNode = (root, id) => {
     node.children.forEach(recur);
   };
   recur(next);
+  return pruneDottedLinks(next);
+};
+
+// Add a dotted (matrix) link from one node to another; ignores self-links and dupes.
+const addDottedLink = (root, fromId, toId, label = "") => {
+  if (fromId === toId) return root;
+  const next = cloneTree(root);
+  walk(next, (n) => {
+    if (n.id === fromId) {
+      n.dotted = n.dotted || [];
+      if (!n.dotted.some((d) => d.to === toId)) n.dotted.push({ to: toId, label });
+    }
+  });
   return next;
+};
+
+const removeDottedLink = (root, fromId, toId) => {
+  const next = cloneTree(root);
+  walk(next, (n) => {
+    if (n.id === fromId && n.dotted) n.dotted = n.dotted.filter((d) => d.to !== toId);
+  });
+  return next;
+};
+
+// Flat list of every dotted link in the tree, for the overlay renderer.
+const flattenLinks = (root) => {
+  const out = [];
+  walk(root, (n) => {
+    (n.dotted || []).forEach((d) => out.push({ from: n.id, to: d.to, label: d.label || "", accent: n.accent }));
+  });
+  return out;
 };
 const addChild = (root, parentId, child) => {
   const next = cloneTree(root);
@@ -122,6 +177,9 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   const [importText, setImportText] = useState("");
   const [saveStatus, setSaveStatus] = useState("synced"); // synced | saving | error
   const [loadError, setLoadError] = useState(null);
+  const [linkingFrom, setLinkingFrom] = useState(null); // id of node we're drawing a dotted line FROM
+  const [showLinks, setShowLinks] = useState(true);
+  const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const saveTimer = useRef(null);
   const hasLoadedRef = useRef(false);
@@ -236,6 +294,25 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   };
   const handleEdit = (id, field, value) => apply((prev) => updateNode(prev, id, { [field]: value }));
 
+  // ----- matrix: accents + dotted links -----
+  const handleSetAccent = (id, accent) => apply((prev) => updateNode(prev, id, { accent }));
+  const handleStartLink = (id) => { setLinkingFrom(id); setSelectedId(id); };
+  const handleRemoveLink = (fromId, toId) => apply((prev) => removeDottedLink(prev, fromId, toId));
+  // Called when a card is clicked while we're in "draw dotted line" mode.
+  const handleLinkTarget = (targetId) => {
+    if (!linkingFrom) return false;
+    if (targetId !== linkingFrom) apply((prev) => addDottedLink(prev, linkingFrom, targetId));
+    setLinkingFrom(null);
+    return true;
+  };
+  // Esc cancels link-drawing.
+  useEffect(() => {
+    if (!linkingFrom) return;
+    const onKey = (e) => { if (e.key === "Escape") setLinkingFrom(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [linkingFrom]);
+
   const handleDragStart = (e, id) => {
     if (id === "root") { e.preventDefault(); return; }
     setDraggedId(id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", id);
@@ -325,6 +402,10 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     return ids;
   }, [tree, search]);
 
+  const links = useMemo(() => (tree ? flattenLinks(tree) : []), [tree]);
+  const selectedNode = useMemo(() => (tree && selectedId ? findNode(tree, selectedId) : null), [tree, selectedId]);
+  const nameOf = useCallback((id) => { const n = tree && findNode(tree, id); return n ? n.name : "—"; }, [tree]);
+
   if (loadError) {
     return (
       <div className="org-root">
@@ -383,6 +464,10 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           <button className="tb" onClick={() => apply(expandAll)}>Expand all</button>
           <button className="tb" onClick={() => apply(collapseAllExceptRoot)}>Collapse all</button>
           <div className="tb-sep" />
+          <button className={`tb ${showLinks ? "tb-on" : ""}`} onClick={() => setShowLinks((v) => !v)} title="Show or hide dotted matrix lines">
+            <Spline size={14} strokeWidth={1.5} /> Dotted lines
+          </button>
+          <div className="tb-sep" />
           <button className="tb" onClick={() => fileInputRef.current?.click()}><Upload size={14} strokeWidth={1.5} /> Import</button>
           <input ref={fileInputRef} type="file" accept=".json,.csv" onChange={handleFileImport} style={{ display: "none" }} />
           <button className="tb" onClick={() => setShowImport(true)}>Paste</button>
@@ -402,7 +487,8 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
       </div>
 
       <main className="canvas" onDragOver={(e) => e.preventDefault()}>
-        <div className="tree-scroll">
+        <div className={`tree-scroll ${linkingFrom ? "is-linking" : ""}`} ref={canvasRef}>
+          <MatrixLinks containerRef={canvasRef} links={links} tree={tree} enabled={showLinks} onRemove={handleRemoveLink} />
           <Node
             node={tree} depth={0}
             onToggle={handleToggle} onAdd={handleAddChild} onDelete={handleDelete} onEdit={handleEdit}
@@ -412,9 +498,30 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
             onDrop={handleDrop} onDragEnd={handleDragEnd}
             draggedId={draggedId} dragOverId={dragOverId}
             matches={matches} searchActive={!!search.trim()}
+            linkingFrom={linkingFrom} onLinkTarget={handleLinkTarget}
+            onStartLink={handleStartLink}
           />
         </div>
       </main>
+
+      {linkingFrom && (
+        <div className="link-banner">
+          <Spline size={15} strokeWidth={1.6} />
+          Click a card to draw a dotted line from <strong>{nameOf(linkingFrom)}</strong>
+          <button className="tb" onClick={() => setLinkingFrom(null)}>Cancel (Esc)</button>
+        </div>
+      )}
+
+      {selectedNode && !linkingFrom && (
+        <Inspector
+          node={selectedNode}
+          nameOf={nameOf}
+          onClose={() => setSelectedId(null)}
+          onSetAccent={handleSetAccent}
+          onStartLink={handleStartLink}
+          onRemoveLink={handleRemoveLink}
+        />
+      )}
 
       {showImport && (
         <div className="modal-bg" onClick={() => setShowImport(false)}>
@@ -442,7 +549,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 function Node(props) {
   const { node, depth, onToggle, onAdd, onDelete, onEdit, editingField, setEditingField,
     selectedId, setSelectedId, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
-    draggedId, dragOverId, matches, searchActive } = props;
+    draggedId, dragOverId, matches, searchActive, linkingFrom, onLinkTarget, onStartLink } = props;
 
   const hasKids = (node.children || []).length > 0;
   const collapsed = node.collapsed && hasKids;
@@ -452,8 +559,14 @@ function Node(props) {
   const dimmed = searchActive && !matches.has(node.id) && !hasMatchingDescendant(node, matches);
   const directReports = (node.children || []).length;
   const totalReports = countDescendants(node);
+  const accent = accentColor(node.accent);
+  const hasAccent = node.accent && node.accent !== "slate";
+  const isLinkSource = linkingFrom === node.id;
+  const isLinkTarget = linkingFrom && linkingFrom !== node.id;
 
   const handleCardClick = (e) => {
+    // In "draw dotted line" mode, a click picks the target instead of selecting.
+    if (linkingFrom && onLinkTarget(node.id)) { e.stopPropagation(); return; }
     if (e.metaKey || e.ctrlKey) { e.preventDefault(); onAdd(node.id); return; }
     setSelectedId(node.id);
   };
@@ -461,7 +574,9 @@ function Node(props) {
   return (
     <div className={`branch ${depth === 0 ? "branch-root" : ""}`}>
       <div
-        className={["card", isSelected ? "card-sel" : "", isDragOver ? "card-over" : "", isDragging ? "card-dragging" : "", dimmed ? "card-dim" : "", node.id === "root" ? "card-root" : ""].join(" ")}
+        data-node-id={node.id}
+        className={["card", isSelected ? "card-sel" : "", isDragOver ? "card-over" : "", isDragging ? "card-dragging" : "", dimmed ? "card-dim" : "", node.id === "root" ? "card-root" : "", hasAccent ? "card-accent" : "", isLinkSource ? "card-link-src" : "", isLinkTarget ? "card-link-target" : ""].join(" ")}
+        style={hasAccent ? { "--card-accent": accent } : undefined}
         draggable={node.id !== "root"}
         onDragStart={(e) => onDragStart(e, node.id)}
         onDragOver={(e) => onDragOver(e, node.id)}
@@ -487,6 +602,9 @@ function Node(props) {
           <div className="card-actions">
             <button className="ghost" title="Add direct report" onClick={(e) => { e.stopPropagation(); onAdd(node.id); }}>
               <Plus size={13} strokeWidth={1.8} />
+            </button>
+            <button className="ghost" title="Draw a dotted (matrix) line from here" onClick={(e) => { e.stopPropagation(); onStartLink(node.id); }}>
+              <Spline size={13} strokeWidth={1.8} />
             </button>
             {node.id !== "root" && (
               <button className="ghost ghost-danger" title="Remove" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}>
@@ -536,6 +654,133 @@ function hasMatchingDescendant(node, matches) {
   let yes = false;
   (function recur(n) { if (matches.has(n.id)) yes = true; (n.children || []).forEach(recur); })(node);
   return yes;
+}
+
+// point on a cubic bezier at parameter t (used to place link labels)
+const bez = (a, b, c, d, t) => { const m = 1 - t; return m*m*m*a + 3*m*m*t*b + 3*m*t*t*c + t*t*t*d; };
+const cssId = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/"/g, '\\"'));
+
+// ---------- dotted-line (matrix) overlay ----------
+// An absolutely-positioned SVG inside .tree-scroll. It measures each linked card's
+// live DOM rect and draws a dashed bezier between them. Recomputes whenever the tree
+// changes (edits, collapse/expand) or the container resizes.
+function MatrixLinks({ containerRef, links, tree, enabled, onRemove }) {
+  const [segs, setSegs] = useState([]);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+
+  const measure = useCallback(() => {
+    const cont = containerRef.current;
+    if (!cont || !enabled || !links.length) { setSegs([]); return; }
+    const crect = cont.getBoundingClientRect();
+    const out = [];
+    for (const link of links) {
+      const a = cont.querySelector(`[data-node-id="${cssId(link.from)}"]`);
+      const b = cont.querySelector(`[data-node-id="${cssId(link.to)}"]`);
+      if (!a || !b) continue; // an endpoint is collapsed away — skip its line
+      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const ax = ra.left - crect.left, ay = ra.top - crect.top;
+      const bx = rb.left - crect.left, by = rb.top - crect.top;
+      const aMid = ax + ra.width / 2, bMid = bx + rb.width / 2;
+      // anchor on the facing vertical edges, mid-height
+      const rightward = bMid >= aMid;
+      const p1 = { x: rightward ? ax + ra.width : ax, y: ay + ra.height / 2 };
+      const p2 = { x: rightward ? bx : bx + rb.width, y: by + rb.height / 2 };
+      const dir = rightward ? 1 : -1;
+      const bow = Math.max(36, Math.abs(p2.x - p1.x) * 0.4);
+      const c1 = { x: p1.x + bow * dir, y: p1.y };
+      const c2 = { x: p2.x - bow * dir, y: p2.y };
+      out.push({
+        key: `${link.from}->${link.to}`,
+        from: link.from, to: link.to, label: link.label,
+        color: accentColor(link.accent),
+        d: `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`,
+        end: p2,
+        mx: bez(p1.x, c1.x, c2.x, p2.x, 0.5),
+        my: bez(p1.y, c1.y, c2.y, p2.y, 0.5),
+      });
+    }
+    setSegs(out);
+    setSize({ w: cont.scrollWidth, h: cont.scrollHeight });
+  }, [containerRef, links, enabled]);
+
+  useLayoutEffect(() => { measure(); }, [measure, tree]);
+  useEffect(() => {
+    const cont = containerRef.current;
+    if (!cont) return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(cont);
+    window.addEventListener("resize", measure);
+    const raf = requestAnimationFrame(measure);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); cancelAnimationFrame(raf); };
+  }, [measure, containerRef]);
+
+  if (!enabled || !segs.length) return null;
+  const colors = [...new Set(segs.map((s) => s.color))];
+  return (
+    <svg className="matrix-svg" width={size.w} height={size.h}>
+      <defs>
+        {colors.map((c) => (
+          <marker key={c} id={`arw-${c.replace("#", "")}`} viewBox="0 0 8 8" refX="6" refY="4"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L8 4 L0 8 z" fill={c} />
+          </marker>
+        ))}
+      </defs>
+      {segs.map((s) => (
+        <g key={s.key}>
+          <path className="matrix-path" d={s.d} stroke={s.color}
+            markerEnd={`url(#arw-${s.color.replace("#", "")})`} />
+          {s.label && (
+            <text className="matrix-label" x={s.mx} y={s.my} fill={s.color}>{s.label}</text>
+          )}
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+// ---------- selection inspector (accent + dotted-line editing) ----------
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink }) {
+  const dotted = node.dotted || [];
+  const current = node.accent || "slate";
+  return (
+    <div className="inspector">
+      <div className="insp-head">
+        <span className="insp-title">{node.name || "Untitled"}</span>
+        <button className="x" onClick={onClose} title="Close">×</button>
+      </div>
+
+      <div className="insp-sec">
+        <div className="insp-label">Card colour</div>
+        <div className="swatches">
+          {ACCENT_KEYS.map((k) => (
+            <button key={k} title={ACCENTS[k].label}
+              className={`swatch ${current === k ? "swatch-on" : ""}`}
+              style={{ "--sw": accentColor(k) }}
+              onClick={() => onSetAccent(node.id, k)} />
+          ))}
+        </div>
+        <div className="insp-role">{ACCENTS[current].label}</div>
+      </div>
+
+      <div className="insp-sec">
+        <div className="insp-label">Dotted lines from here</div>
+        {dotted.length === 0 && <div className="insp-empty">None yet — draw one to another card.</div>}
+        {dotted.map((d) => (
+          <div className="link-row" key={d.to}>
+            <Spline size={12} strokeWidth={1.7} />
+            <span className="link-to">{nameOf(d.to)}</span>
+            <button className="link-x" title="Remove line" onClick={() => onRemoveLink(node.id, d.to)}>
+              <X size={12} strokeWidth={2} />
+            </button>
+          </div>
+        ))}
+        <button className="tb tb-primary insp-add" onClick={() => onStartLink(node.id)}>
+          <Spline size={13} strokeWidth={1.7} /> Draw dotted line
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function EditableField({ value, field, id, editing, setEditing, onChange, className, placeholder }) {
@@ -745,4 +990,100 @@ const chartStyles = `
   border: 1px solid var(--rule); background: #fffdf6; resize: vertical; outline: none; }
 .modal textarea:focus { border-color: var(--ink); }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+/* ---------- matrix: toolbar toggle ---------- */
+.tb.tb-on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+/* ---------- matrix: accent-coloured cards ---------- */
+/* the card's left rail + a faint tint pick up --card-accent (set inline) */
+.card-accent { border-color: color-mix(in srgb, var(--card-accent) 40%, var(--rule)); }
+.card-accent .card-rail { background: var(--card-accent); opacity: 1; width: 4px; }
+.card-accent .team { color: var(--card-accent); }
+.card-accent.card-sel { border-color: var(--card-accent); }
+
+/* ---------- matrix: link-drawing affordances ---------- */
+.tree-scroll.is-linking .card { cursor: crosshair; }
+.card-link-src { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.card-link-target:hover {
+  border-color: var(--accent); border-style: dashed;
+  box-shadow: 0 0 0 3px rgba(184, 68, 42, 0.12), var(--shadow-lift);
+}
+
+/* ---------- matrix: SVG overlay ---------- */
+.tree-scroll { position: relative; }
+.branch-root { position: relative; z-index: 1; }
+.matrix-svg { position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none; overflow: visible; }
+.matrix-path {
+  fill: none; stroke-width: 1.6;
+  stroke-dasharray: 2 5; stroke-linecap: round;
+  opacity: 0.85;
+}
+.matrix-label {
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
+  text-anchor: middle; dominant-baseline: middle;
+  paint-order: stroke; stroke: var(--paper); stroke-width: 4px; stroke-linejoin: round;
+}
+
+/* ---------- matrix: link-drawing banner ---------- */
+.link-banner {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  z-index: 60; display: flex; align-items: center; gap: 10px;
+  background: var(--ink); color: var(--paper);
+  padding: 10px 14px; border-radius: 3px;
+  font-family: 'Iowan Old Style', Georgia, serif; font-size: 13px;
+  box-shadow: var(--shadow-lift);
+}
+.link-banner strong { font-weight: 600; }
+.link-banner .tb {
+  background: transparent; color: var(--paper); border-color: rgba(245,241,232,0.4);
+  padding: 4px 9px; font-size: 12px;
+}
+.link-banner .tb:hover { background: var(--paper); color: var(--ink); border-color: var(--paper); }
+
+/* ---------- matrix: selection inspector ---------- */
+.inspector {
+  position: fixed; right: 24px; bottom: 24px; z-index: 55;
+  width: 244px;
+  background: var(--paper); border: 1px solid var(--ink);
+  border-radius: 3px; box-shadow: var(--shadow-lift);
+  font-family: 'Iowan Old Style', Georgia, serif;
+}
+.insp-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-bottom: 1px solid var(--rule);
+}
+.insp-title { font-size: 14px; font-weight: 600; letter-spacing: -0.005em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insp-sec { padding: 12px; border-bottom: 1px solid var(--rule-soft); }
+.insp-sec:last-child { border-bottom: none; }
+.insp-label {
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--ink-faint); margin-bottom: 8px;
+}
+.swatches { display: flex; gap: 7px; }
+.swatch {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--sw); border: 2px solid var(--paper);
+  box-shadow: 0 0 0 1px var(--rule); cursor: pointer; padding: 0;
+  transition: transform 0.1s ease;
+}
+.swatch:hover { transform: scale(1.12); }
+.swatch-on { box-shadow: 0 0 0 2px var(--ink); }
+.insp-role {
+  margin-top: 8px; font-size: 11.5px; font-style: italic; color: var(--ink-soft);
+}
+.insp-empty { font-size: 12px; font-style: italic; color: var(--ink-faint); }
+.link-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: var(--ink-soft); padding: 3px 0;
+}
+.link-row .link-to { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-x {
+  background: transparent; border: none; cursor: pointer; padding: 2px;
+  color: var(--ink-faint); display: grid; place-items: center; border-radius: 2px;
+}
+.link-x:hover { color: var(--accent); background: var(--paper-2); }
+.insp-add { margin-top: 10px; width: 100%; justify-content: center; }
 `;
