@@ -303,6 +303,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 
   // ----- matrix: accents + dotted links -----
   const handleSetAccent = (id, accent) => apply((prev) => updateNode(prev, id, { accent }));
+  const handleToggleGroup = (id, val) => apply((prev) => updateNode(prev, id, { group: val }));
   const handleStartLink = (id) => { setLinkingFrom(id); setSelectedId(id); };
   const handleRemoveLink = (fromId, toId) => apply((prev) => removeDottedLink(prev, fromId, toId));
   // Called when a card is clicked while we're in "draw dotted line" mode.
@@ -636,6 +637,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           onSetAccent={handleSetAccent}
           onStartLink={handleStartLink}
           onRemoveLink={handleRemoveLink}
+          onToggleGroup={handleToggleGroup}
         />
       )}
 
@@ -687,67 +689,93 @@ function Node(props) {
     setSelectedId(node.id);
   };
 
-  return (
-    <div className={`branch ${depth === 0 ? "branch-root" : ""}`}>
-      <div
-        data-node-id={node.id}
-        className={["card", isSelected ? "card-sel" : "", isDragOver ? "card-over" : "", isDragging ? "card-dragging" : "", dimmed ? "card-dim" : "", node.id === "root" ? "card-root" : "", hasAccent ? "card-accent" : "", isLinkSource ? "card-link-src" : "", isLinkTarget ? "card-link-target" : ""].join(" ")}
-        style={hasAccent ? { "--card-accent": accent } : undefined}
-        draggable={node.id !== "root"}
-        onDragStart={(e) => onDragStart(e, node.id)}
-        onDragOver={(e) => onDragOver(e, node.id)}
-        onDragLeave={() => onDragLeave(node.id)}
-        onDrop={(e) => onDrop(e, node.id)}
-        onDragEnd={onDragEnd}
-        onClick={handleCardClick}
-      >
-        <div className="card-rail" />
+  const isBand = !!node.group;
 
-        <div className="card-head">
-          {hasKids ? (
-            <button className="chev" onClick={(e) => { e.stopPropagation(); onToggle(node.id); }} title={collapsed ? "Expand" : "Collapse"}>
-              {collapsed ? <ChevronRight size={14} strokeWidth={2} /> : <ChevronDown size={14} strokeWidth={2} />}
-            </button>
-          ) : <div className="chev-spacer" />}
+  const cardEl = (
+    <div
+      data-node-id={node.id}
+      className={["card", isBand ? "card-band-head" : "", isSelected ? "card-sel" : "", isDragOver ? "card-over" : "", isDragging ? "card-dragging" : "", dimmed ? "card-dim" : "", node.id === "root" ? "card-root" : "", hasAccent ? "card-accent" : "", isLinkSource ? "card-link-src" : "", isLinkTarget ? "card-link-target" : ""].join(" ")}
+      style={hasAccent ? { "--card-accent": accent } : undefined}
+      draggable={node.id !== "root"}
+      onDragStart={(e) => onDragStart(e, node.id)}
+      onDragOver={(e) => onDragOver(e, node.id)}
+      onDragLeave={() => onDragLeave(node.id)}
+      onDrop={(e) => onDrop(e, node.id)}
+      onDragEnd={onDragEnd}
+      onClick={handleCardClick}
+    >
+      <div className="card-rail" />
 
-          <EditableField value={node.name} field="name" id={node.id}
-            editing={editingField?.id === node.id && editingField?.field === "name"}
-            setEditing={setEditingField} onChange={onEdit}
-            className="name" placeholder="Name" />
+      <div className="card-head">
+        {hasKids ? (
+          <button className="chev" onClick={(e) => { e.stopPropagation(); onToggle(node.id); }} title={collapsed ? "Expand" : "Collapse"}>
+            {collapsed ? <ChevronRight size={14} strokeWidth={2} /> : <ChevronDown size={14} strokeWidth={2} />}
+          </button>
+        ) : <div className="chev-spacer" />}
 
-          <div className="card-actions">
-            <button className="ghost" title="Add direct report" onClick={(e) => { e.stopPropagation(); onAdd(node.id); }}>
-              <Plus size={13} strokeWidth={1.8} />
-            </button>
-            <button className="ghost" title="Draw a dotted (matrix) line from here" onClick={(e) => { e.stopPropagation(); onStartLink(node.id); }}>
-              <Spline size={13} strokeWidth={1.8} />
-            </button>
-            {node.id !== "root" && (
-              <button className="ghost ghost-danger" title="Remove" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}>
-                <Trash2 size={13} strokeWidth={1.8} />
-              </button>
-            )}
-          </div>
-        </div>
-
-        <EditableField value={node.title} field="title" id={node.id}
-          editing={editingField?.id === node.id && editingField?.field === "title"}
+        <EditableField value={node.name} field="name" id={node.id}
+          editing={editingField?.id === node.id && editingField?.field === "name"}
           setEditing={setEditingField} onChange={onEdit}
-          className="title" placeholder="Title" />
+          className="name" placeholder="Name" />
 
-        <div className="card-foot">
-          <EditableField value={node.team} field="team" id={node.id}
-            editing={editingField?.id === node.id && editingField?.field === "team"}
-            setEditing={setEditingField} onChange={onEdit}
-            className="team" placeholder="+ team" />
-          {hasKids && (
-            <span className="report-count" title={`${directReports} direct, ${totalReports} total`}>
-              <Users size={11} strokeWidth={1.8} />
-              {directReports}{totalReports !== directReports ? ` · ${totalReports}` : ""}
-            </span>
+        <div className="card-actions">
+          <button className="ghost" title="Add direct report" onClick={(e) => { e.stopPropagation(); onAdd(node.id); }}>
+            <Plus size={13} strokeWidth={1.8} />
+          </button>
+          <button className="ghost" title="Draw a dotted (matrix) line from here" onClick={(e) => { e.stopPropagation(); onStartLink(node.id); }}>
+            <Spline size={13} strokeWidth={1.8} />
+          </button>
+          {node.id !== "root" && (
+            <button className="ghost ghost-danger" title="Remove" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}>
+              <Trash2 size={13} strokeWidth={1.8} />
+            </button>
           )}
         </div>
       </div>
+
+      <EditableField value={node.title} field="title" id={node.id}
+        editing={editingField?.id === node.id && editingField?.field === "title"}
+        setEditing={setEditingField} onChange={onEdit}
+        className="title" placeholder="Title" />
+
+      <div className="card-foot">
+        <EditableField value={node.team} field="team" id={node.id}
+          editing={editingField?.id === node.id && editingField?.field === "team"}
+          setEditing={setEditingField} onChange={onEdit}
+          className="team" placeholder="+ team" />
+        {hasKids && (
+          <span className="report-count" title={`${directReports} direct, ${totalReports} total`}>
+            <Users size={11} strokeWidth={1.8} />
+            {directReports}{totalReports !== directReports ? ` · ${totalReports}` : ""}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+
+  // ----- band (matrix container): children laid out as columns inside a bordered region -----
+  if (isBand) {
+    return (
+      <div className={`branch ${depth === 0 ? "branch-root" : ""}`}>
+        <div data-band-id={node.id}
+          className={`band ${node.stack ? "band-stack" : ""} ${hasAccent ? "band-accent" : ""} ${dimmed ? "card-dim" : ""}`}
+          style={hasAccent ? { "--card-accent": accent } : undefined}>
+          {cardEl}
+          {hasKids && !collapsed && (
+            <div className="band-body">
+              {node.children.map((child) => (
+                <Node {...props} key={child.id} node={child} depth={depth + 1} />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`branch ${depth === 0 ? "branch-root" : ""}`}>
+      {cardEl}
 
       {hasKids && !collapsed && (
         <div className="children-wrap">
@@ -788,10 +816,13 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId }) {
     const cv = canvasRef.current;
     if (!cv || !enabled || !links.length) { setSegs([]); return; }
     const cr = cv.getBoundingClientRect();
+    // a link endpoint resolves to the whole band box when the node is a group,
+    // so arrows land on the band's near edge rather than its far-left header card
+    const findEl = (id) => cv.querySelector(`[data-band-id="${cssId(id)}"]`) || cv.querySelector(`[data-node-id="${cssId(id)}"]`);
     const out = [];
     for (const link of links) {
-      const a = cv.querySelector(`[data-node-id="${cssId(link.from)}"]`);
-      const b = cv.querySelector(`[data-node-id="${cssId(link.to)}"]`);
+      const a = findEl(link.from);
+      const b = findEl(link.to);
       if (!a || !b) continue; // an endpoint is collapsed away — skip its line
       const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
       // screen coords relative to the canvas viewport
@@ -888,9 +919,10 @@ function Legend({ tree }) {
 }
 
 // ---------- selection inspector (accent + dotted-line editing) ----------
-function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink }) {
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup }) {
   const dotted = node.dotted || [];
   const current = node.accent || "slate";
+  const isGroup = !!node.group;
   return (
     <div className="inspector">
       <div className="insp-head">
@@ -909,6 +941,14 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
           ))}
         </div>
         <div className="insp-role">{ACCENTS[current].label}</div>
+      </div>
+
+      <div className="insp-sec">
+        <label className="insp-check">
+          <input type="checkbox" checked={isGroup} onChange={(e) => onToggleGroup(node.id, e.target.checked)} />
+          <span>Group as a band</span>
+        </label>
+        <div className="insp-hint">Lays this card's reports out as columns inside a bordered region — the matrix "pool".</div>
       </div>
 
       <div className="insp-sec">
@@ -1116,7 +1156,7 @@ const chartStyles = `
 
 .children-wrap { display: flex; flex-direction: column; align-items: center; position: relative; }
 .connector-v { width: 2px; height: 22px; background: var(--rule); border-radius: 2px; }
-.children { display: flex; gap: 22px; position: relative; padding-top: 0; }
+.children { display: flex; gap: 24px; position: relative; padding-top: 0; }
 .child-slot { display: flex; flex-direction: column; align-items: center; position: relative; }
 .connector-h { position: absolute; top: -22px; left: 0; right: 0; height: 2px;
   background: var(--rule); }
@@ -1200,6 +1240,34 @@ const chartStyles = `
 .legend-row { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .legend-dot { width: 11px; height: 11px; border-radius: 3px; flex: none; }
 
+/* ---------- matrix: band (grouping container) ---------- */
+.band {
+  --band-c: var(--card-accent, var(--ink-faint));
+  display: inline-flex; flex-direction: column; gap: 14px;
+  padding: 13px 14px 15px;
+  border: 1.5px solid color-mix(in srgb, var(--band-c) 50%, var(--rule));
+  background:
+    linear-gradient(color-mix(in srgb, var(--band-c) 7%, #fffdf7),
+                    color-mix(in srgb, var(--band-c) 11%, #fffdf7));
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(26, 22, 18, 0.04), 0 18px 40px -22px rgba(26, 22, 18, 0.45);
+}
+/* bands get horizontal breathing room from siblings (e.g. the client GMs) so
+   the dotted lines spanning the gap are legible — scoped to bands, not all charts */
+.band { margin: 0 64px; }
+.band-body { display: flex; align-items: flex-start; gap: 20px; }
+.band-stack .band-body { flex-direction: column; align-items: stretch; gap: 14px; }
+/* the band's header card reads as a title bar, not a floating card */
+.card-band-head {
+  width: auto; min-width: 190px; max-width: 320px; align-self: stretch;
+  box-shadow: none; background: transparent; border: none;
+  border-bottom: 1px dashed color-mix(in srgb, var(--band-c) 45%, var(--rule));
+  border-radius: 0; padding: 2px 4px 9px 10px;
+}
+.card-band-head:hover { transform: none; box-shadow: none; }
+.card-band-head .card-rail { border-radius: 3px; }
+.card-band-head .name { font-size: 15px; }
+
 /* ---------- matrix: link-drawing banner ---------- */
 .link-banner {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
@@ -1249,6 +1317,9 @@ const chartStyles = `
 .insp-role {
   margin-top: 8px; font-size: 11.5px; font-style: italic; color: var(--ink-soft);
 }
+.insp-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.insp-check input { width: 15px; height: 15px; accent-color: var(--ink); cursor: pointer; }
+.insp-hint { margin-top: 6px; font-size: 11px; font-style: italic; color: var(--ink-faint); line-height: 1.4; }
 .insp-empty { font-size: 12px; font-style: italic; color: var(--ink-faint); }
 .link-row {
   display: flex; align-items: center; gap: 6px;
