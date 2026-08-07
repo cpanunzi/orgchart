@@ -304,6 +304,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   // ----- matrix: accents + dotted links -----
   const handleSetAccent = (id, accent) => apply((prev) => updateNode(prev, id, { accent }));
   const handleToggleGroup = (id, val) => apply((prev) => updateNode(prev, id, { group: val }));
+  const handleSetStack = (id, val) => apply((prev) => updateNode(prev, id, { stack: val }));
   const handleStartLink = (id) => { setLinkingFrom(id); setSelectedId(id); };
   const handleRemoveLink = (fromId, toId) => apply((prev) => removeDottedLink(prev, fromId, toId));
   // Called when a card is clicked while we're in "draw dotted line" mode.
@@ -638,6 +639,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           onStartLink={handleStartLink}
           onRemoveLink={handleRemoveLink}
           onToggleGroup={handleToggleGroup}
+          onSetStack={handleSetStack}
         />
       )}
 
@@ -919,10 +921,11 @@ function Legend({ tree }) {
 }
 
 // ---------- selection inspector (accent + dotted-line editing) ----------
-function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup }) {
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack }) {
   const dotted = node.dotted || [];
   const current = node.accent || "slate";
   const isGroup = !!node.group;
+  const isStack = !!node.stack;
   return (
     <div className="inspector">
       <div className="insp-head">
@@ -946,9 +949,15 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
       <div className="insp-sec">
         <label className="insp-check">
           <input type="checkbox" checked={isGroup} onChange={(e) => onToggleGroup(node.id, e.target.checked)} />
-          <span>Group as a band</span>
+          <span>Make this a section</span>
         </label>
-        <div className="insp-hint">Lays this card's reports out as columns inside a bordered region — the matrix "pool".</div>
+        <div className="insp-hint">Wraps this card's reports in a bordered, titled region — a "Product" / "GTM" style group.</div>
+        {isGroup && (
+          <div className="insp-seg">
+            <button className={`seg-btn ${!isStack ? "seg-on" : ""}`} onClick={() => onSetStack(node.id, false)}>Columns</button>
+            <button className={`seg-btn ${isStack ? "seg-on" : ""}`} onClick={() => onSetStack(node.id, true)}>Stacked</button>
+          </div>
+        )}
       </div>
 
       <div className="insp-sec">
@@ -1320,6 +1329,12 @@ const chartStyles = `
 .insp-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .insp-check input { width: 15px; height: 15px; accent-color: var(--ink); cursor: pointer; }
 .insp-hint { margin-top: 6px; font-size: 11px; font-style: italic; color: var(--ink-faint); line-height: 1.4; }
+.insp-seg { display: flex; gap: 0; margin-top: 10px; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; width: fit-content; }
+.seg-btn { font-family: inherit; font-size: 12px; padding: 5px 12px; border: none; background: transparent; color: var(--ink-soft); cursor: pointer; }
+.seg-btn + .seg-btn { border-left: 1px solid var(--rule); }
+.seg-btn:hover { background: var(--paper-2); }
+.seg-on { background: var(--ink); color: var(--paper); }
+.seg-on:hover { background: var(--ink); }
 .insp-empty { font-size: 12px; font-style: italic; color: var(--ink-faint); }
 .link-row {
   display: flex; align-items: center; gap: 6px;
