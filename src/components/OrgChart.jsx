@@ -17,6 +17,21 @@ const ACCENTS = {
 const ACCENT_KEYS = Object.keys(ACCENTS);
 const accentColor = (key) => (ACCENTS[key] || ACCENTS.slate).color;
 
+// A chart may override any role's label/colour; overrides live on the tree root
+// as `root.palette = { <key>: { label?, color? } }`. mergePalette folds those onto
+// the defaults so old charts (no palette) render exactly as before.
+const mergePalette = (root) => {
+  const o = (root && root.palette) || {};
+  const m = {};
+  for (const k of ACCENT_KEYS) {
+    const ov = o[k] || {};
+    m[k] = { label: ov.label || ACCENTS[k].label, color: ov.color || ACCENTS[k].color };
+  }
+  return m;
+};
+const palColor = (pal, key) => (pal[key] || pal.slate).color;
+const palLabel = (pal, key) => (pal[key] || pal.slate).label;
+
 // ---------- helpers ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -305,6 +320,11 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   const handleSetAccent = (id, accent) => apply((prev) => updateNode(prev, id, { accent }));
   const handleToggleGroup = (id, val) => apply((prev) => updateNode(prev, id, { group: val }));
   const handleSetStack = (id, val) => apply((prev) => updateNode(prev, id, { stack: val }));
+  // rename/recolour a role — stored on the tree root so it persists per-chart
+  const handleEditAccentMeta = (key, patch) => apply((prev) => ({
+    ...prev,
+    palette: { ...(prev.palette || {}), [key]: { ...((prev.palette || {})[key] || {}), ...patch } },
+  }));
   const handleStartLink = (id) => { setLinkingFrom(id); setSelectedId(id); };
   const handleRemoveLink = (fromId, toId) => apply((prev) => removeDottedLink(prev, fromId, toId));
   // Called when a card is clicked while we're in "draw dotted line" mode.
@@ -412,6 +432,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   }, [tree, search]);
 
   const links = useMemo(() => (tree ? flattenLinks(tree) : []), [tree]);
+  const palette = useMemo(() => mergePalette(tree), [tree]);
   const selectedNode = useMemo(() => (tree && selectedId ? findNode(tree, selectedId) : null), [tree, selectedId]);
   const nameOf = useCallback((id) => { const n = tree && findNode(tree, id); return n ? n.name : "—"; }, [tree]);
 
@@ -590,7 +611,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
       >
         <MatrixLinks
           canvasRef={canvasRef} links={links} enabled={showLinks}
-          viewKey={viewKey} selectedId={selectedId}
+          viewKey={viewKey} selectedId={selectedId} palette={palette}
         />
         <div
           className={`zoom-layer ${linkingFrom ? "is-linking" : ""}`}
@@ -607,12 +628,12 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
               draggedId={draggedId} dragOverId={dragOverId}
               matches={matches} searchActive={!!search.trim()}
               linkingFrom={linkingFrom} onLinkTarget={handleLinkTarget}
-              onStartLink={handleStartLink}
+              onStartLink={handleStartLink} palette={palette}
             />
           </div>
         </div>
 
-        <Legend tree={tree} />
+        <Legend tree={tree} palette={palette} onEdit={handleEditAccentMeta} />
 
         <div className="zoom-controls">
           <button className="zc" onClick={() => zoomButton(1 / 1.2)} title="Zoom out">−</button>
@@ -640,6 +661,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           onRemoveLink={handleRemoveLink}
           onToggleGroup={handleToggleGroup}
           onSetStack={handleSetStack}
+          palette={palette}
         />
       )}
 
@@ -669,7 +691,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 function Node(props) {
   const { node, depth, onToggle, onAdd, onDelete, onEdit, editingField, setEditingField,
     selectedId, setSelectedId, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
-    draggedId, dragOverId, matches, searchActive, linkingFrom, onLinkTarget, onStartLink } = props;
+    draggedId, dragOverId, matches, searchActive, linkingFrom, onLinkTarget, onStartLink, palette } = props;
 
   const hasKids = (node.children || []).length > 0;
   const collapsed = node.collapsed && hasKids;
@@ -679,7 +701,7 @@ function Node(props) {
   const dimmed = searchActive && !matches.has(node.id) && !hasMatchingDescendant(node, matches);
   const directReports = (node.children || []).length;
   const totalReports = countDescendants(node);
-  const accent = accentColor(node.accent);
+  const accent = palColor(palette, node.accent);
   const hasAccent = node.accent && node.accent !== "slate";
   const isLinkSource = linkingFrom === node.id;
   const isLinkTarget = linkingFrom && linkingFrom !== node.id;
@@ -810,7 +832,7 @@ const cssId = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).repla
 // A screen-space SVG pinned over the .canvas viewport. It measures where each linked
 // card currently appears on screen (after pan/zoom) and draws a dashed arc that rises
 // above the row, clearing intervening cards. Recomputes on view change, resize, edits.
-function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId }) {
+function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette }) {
   const [segs, setSegs] = useState([]);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
@@ -842,7 +864,7 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId }) {
       out.push({
         key: `${link.from}->${link.to}`,
         from: link.from, to: link.to, label: link.label,
-        color: accentColor(link.accent),
+        color: palColor(palette, link.accent),
         d: `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`,
         mx: bez(p1.x, c1.x, c2.x, p2.x, 0.5),
         my: bez(p1.y, c1.y, c2.y, p2.y, 0.5),
@@ -850,7 +872,7 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId }) {
     }
     setSegs(out);
     setSize({ w: cv.clientWidth, h: cv.clientHeight });
-  }, [canvasRef, links, enabled]);
+  }, [canvasRef, links, enabled, palette]);
 
   useLayoutEffect(() => { measure(); }, [measure, viewKey]);
   useEffect(() => {
@@ -898,9 +920,10 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId }) {
   );
 }
 
-// ---------- role legend ----------
-// Shows which accent roles are actually used in the chart.
-function Legend({ tree }) {
+// ---------- role legend (editable) ----------
+// Shows the accent roles used in the chart. Each row's colour and label are
+// editable and persist to the chart (root.palette) via onEdit(key, patch).
+function Legend({ tree, palette, onEdit }) {
   const used = useMemo(() => {
     if (!tree) return [];
     const seen = new Set();
@@ -910,18 +933,39 @@ function Legend({ tree }) {
   if (used.length < 1) return null;
   return (
     <div className="legend">
+      <div className="legend-head">Roles <span>· click to edit</span></div>
       {used.map((k) => (
         <div className="legend-row" key={k}>
-          <span className="legend-dot" style={{ background: accentColor(k) }} />
-          {ACCENTS[k].label}
+          <label className="legend-dot" style={{ background: palColor(palette, k) }} title="Change colour">
+            <input type="color" value={palColor(palette, k)} onChange={(e) => onEdit(k, { color: e.target.value })} />
+          </label>
+          <LegendLabel value={palLabel(palette, k)} onCommit={(v) => onEdit(k, { label: v })} />
         </div>
       ))}
     </div>
   );
 }
 
+function LegendLabel({ value, onCommit }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  useEffect(() => { setDraft(value); }, [value, editing]);
+  if (editing) {
+    return (
+      <input className="legend-input" autoFocus value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => { onCommit(draft.trim() || value); setEditing(false); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { onCommit(draft.trim() || value); setEditing(false); }
+          if (e.key === "Escape") { setDraft(value); setEditing(false); }
+        }} />
+    );
+  }
+  return <span className="legend-label" onClick={() => setEditing(true)} title="Click to rename">{value}</span>;
+}
+
 // ---------- selection inspector (accent + dotted-line editing) ----------
-function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack }) {
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette }) {
   const dotted = node.dotted || [];
   const current = node.accent || "slate";
   const isGroup = !!node.group;
@@ -937,13 +981,13 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
         <div className="insp-label">Card colour</div>
         <div className="swatches">
           {ACCENT_KEYS.map((k) => (
-            <button key={k} title={ACCENTS[k].label}
+            <button key={k} title={palLabel(palette, k)}
               className={`swatch ${current === k ? "swatch-on" : ""}`}
-              style={{ "--sw": accentColor(k) }}
+              style={{ "--sw": palColor(palette, k) }}
               onClick={() => onSetAccent(node.id, k)} />
           ))}
         </div>
-        <div className="insp-role">{ACCENTS[current].label}</div>
+        <div className="insp-role">{palLabel(palette, current)}</div>
       </div>
 
       <div className="insp-sec">
@@ -1246,8 +1290,26 @@ const chartStyles = `
   display: flex; flex-direction: column; gap: 6px;
   font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 11px; color: var(--ink-soft);
 }
+.legend-head {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--ink-faint); margin-bottom: 3px;
+}
+.legend-head span { text-transform: none; letter-spacing: 0; font-style: italic; opacity: 0.8; }
 .legend-row { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-.legend-dot { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.legend-dot {
+  position: relative; width: 13px; height: 13px; border-radius: 3px; flex: none;
+  cursor: pointer; box-shadow: 0 0 0 1px rgba(26,22,18,0.12) inset;
+  transition: transform 0.1s ease;
+}
+.legend-dot:hover { transform: scale(1.15); }
+.legend-dot input { position: absolute; inset: 0; opacity: 0; cursor: pointer; padding: 0; border: none; }
+.legend-label { cursor: text; padding: 1px 4px; margin: 0 -4px; border-radius: 3px; }
+.legend-label:hover { background: var(--paper-2); }
+.legend-input {
+  font-family: inherit; font-size: 11px; color: var(--ink);
+  border: 1px solid var(--ink); border-radius: 3px; padding: 1px 4px; margin: 0 -5px;
+  outline: none; background: #fffdf7; width: 110px; box-sizing: border-box;
+}
 
 /* ---------- matrix: band (grouping container) ---------- */
 .band {
