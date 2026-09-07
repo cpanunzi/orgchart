@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from "react";
-import { ChevronDown, ChevronRight, Plus, Trash2, Download, Upload, Users, Search, RotateCcw, FileDown, ArrowLeft, Edit2, Spline, X, Maximize2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Trash2, Download, Upload, Users, Search, RotateCcw, FileDown, ArrowLeft, Edit2, Spline, X, Maximize2, Eye, EyeOff } from "lucide-react";
 import { supabase } from "../lib/supabase.js";
 import { sharedStyles } from "./styles.js";
 
@@ -210,6 +210,16 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panning, setPanning] = useState(false);
   const [focusId, setFocusId] = useState(null); // drill-down: show only this subtree (null = whole chart)
+  // Public view: hides colour coding, the legend and role labels so the chart is safe to show
+  // anyone. Mirrored into the URL (?public=1) so the address bar becomes a shareable clean link.
+  const [publicView, setPublicView] = useState(() => new URLSearchParams(window.location.search).get("public") === "1");
+  const togglePublic = useCallback(() => {
+    const next = !publicView;
+    const url = new URL(window.location.href);
+    if (next) url.searchParams.set("public", "1"); else url.searchParams.delete("public");
+    window.history.replaceState(null, "", url.toString());
+    setPublicView(next);
+  }, [publicView]);
   const canvasRef = useRef(null);   // the .canvas viewport
   const treeRef = useRef(null);     // the natural-size tree layer (for Fit)
   const panRef = useRef(null);      // in-flight pan drag state
@@ -630,6 +640,13 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           <button className={`tb ${showLinks ? "tb-on" : ""}`} onClick={() => setShowLinks((v) => !v)} title="Dotted lines are shown when you dig into a team — this toggles them there">
             <Spline size={14} strokeWidth={1.5} /> Dotted lines
           </button>
+          <button className={`tb ${publicView ? "tb-public" : ""}`} onClick={togglePublic}
+            title={publicView
+              ? "Public view is ON — colour coding, legend and role labels are hidden. Copy this page's URL to share the clean version."
+              : "Switch to a public-safe view (hides colour coding, legend and role labels)"}>
+            {publicView ? <EyeOff size={14} strokeWidth={1.5} /> : <Eye size={14} strokeWidth={1.5} />} Public view
+          </button>
+          {publicView && <span className="public-chip">colours &amp; legend hidden · share this URL</span>}
           <div className="tb-sep" />
           <button className="tb" onClick={() => fileInputRef.current?.click()}><Upload size={14} strokeWidth={1.5} /> Import</button>
           <input ref={fileInputRef} type="file" accept=".json,.csv" onChange={handleFileImport} style={{ display: "none" }} />
@@ -659,7 +676,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
         <MatrixLinks
           canvasRef={canvasRef} links={links} enabled={showLinks && !!focusId}
           viewKey={viewKey} selectedId={selectedId} palette={palette}
-          nameOf={nameOf} focused={!!focusId}
+          nameOf={nameOf} focused={!!focusId} publicView={publicView}
         />
         <div
           className={`zoom-layer ${linkingFrom ? "is-linking" : ""}`}
@@ -678,11 +695,12 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
               linkingFrom={linkingFrom} onLinkTarget={handleLinkTarget}
               onStartLink={handleStartLink} palette={palette}
               onFocus={enterFocus}
+              publicView={publicView}
             />
           </div>
         </div>
 
-        <Legend tree={tree} palette={palette} onEdit={handleEditAccentMeta} />
+        {!publicView && <Legend tree={tree} palette={palette} onEdit={handleEditAccentMeta} />}
 
         {focusNode && (
           <div className="crumbs">
@@ -729,6 +747,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           onFocus={enterFocus}
           people={people}
           onAddLink={handleAddLinkTo}
+          publicView={publicView}
         />
       )}
 
@@ -758,7 +777,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 function Node(props) {
   const { node, depth, onToggle, onAdd, onDelete, onEdit, editingField, setEditingField,
     selectedId, setSelectedId, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
-    draggedId, dragOverId, matches, searchActive, linkingFrom, onLinkTarget, onStartLink, palette, onFocus } = props;
+    draggedId, dragOverId, matches, searchActive, linkingFrom, onLinkTarget, onStartLink, palette, onFocus, publicView } = props;
 
   const hasKids = (node.children || []).length > 0;
   const collapsed = node.collapsed && hasKids;
@@ -769,7 +788,7 @@ function Node(props) {
   const directReports = (node.children || []).length;
   const totalReports = countDescendants(node);
   const accent = palColor(palette, node.accent);
-  const hasAccent = node.accent && node.accent !== "slate";
+  const hasAccent = !publicView && node.accent && node.accent !== "slate"; // public view strips colour coding
   const isLinkSource = linkingFrom === node.id;
   const isLinkTarget = linkingFrom && linkingFrom !== node.id;
 
@@ -900,7 +919,7 @@ const cssId = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).repla
 // A screen-space SVG pinned over the .canvas viewport. It measures where each linked
 // card currently appears on screen (after pan/zoom) and draws a dashed arc that rises
 // above the row, clearing intervening cards. Recomputes on view change, resize, edits.
-function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, nameOf, focused }) {
+function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, nameOf, focused, publicView }) {
   const [segs, setSegs] = useState([]);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
@@ -925,7 +944,7 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, 
         const r = vis.getBoundingClientRect();
         out.push({
           key: `${link.from}->${link.to}`, stub: true, from: link.from, to: link.to,
-          color: palColor(palette, link.accent),
+          color: publicView ? palColor(palette, "slate") : palColor(palette, link.accent),
           x: r.right - cr.left, y: r.top - cr.top + r.height / 2,
           text: `${isOut ? "→" : "←"} ${nameOf(isOut ? link.to : link.from)}`,
         });
@@ -947,7 +966,7 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, 
       out.push({
         key: `${link.from}->${link.to}`,
         from: link.from, to: link.to, label: link.label,
-        color: palColor(palette, link.accent),
+        color: publicView ? palColor(palette, "slate") : palColor(palette, link.accent),
         d: `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`,
         mx: bez(p1.x, c1.x, c2.x, p2.x, 0.5),
         my: bez(p1.y, c1.y, c2.y, p2.y, 0.5),
@@ -955,7 +974,7 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, 
     }
     setSegs(out);
     setSize({ w: cv.clientWidth, h: cv.clientHeight });
-  }, [canvasRef, links, enabled, palette, focused, nameOf]);
+  }, [canvasRef, links, enabled, palette, focused, nameOf, publicView]);
 
   useLayoutEffect(() => { measure(); }, [measure, viewKey]);
   useEffect(() => {
@@ -1060,7 +1079,7 @@ function LegendLabel({ value, onCommit }) {
 }
 
 // ---------- selection inspector (accent + dotted-line editing) ----------
-function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus, people, onAddLink }) {
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus, people, onAddLink, publicView }) {
   const dotted = node.dotted || [];
   const current = node.accent || "slate";
   const isGroup = !!node.group;
@@ -1081,18 +1100,20 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
         </div>
       )}
 
-      <div className="insp-sec">
-        <div className="insp-label">Card colour</div>
-        <div className="swatches">
-          {ACCENT_KEYS.map((k) => (
-            <button key={k} title={palLabel(palette, k)}
-              className={`swatch ${current === k ? "swatch-on" : ""}`}
-              style={{ "--sw": palColor(palette, k) }}
-              onClick={() => onSetAccent(node.id, k)} />
-          ))}
+      {!publicView && (
+        <div className="insp-sec">
+          <div className="insp-label">Card colour</div>
+          <div className="swatches">
+            {ACCENT_KEYS.map((k) => (
+              <button key={k} title={palLabel(palette, k)}
+                className={`swatch ${current === k ? "swatch-on" : ""}`}
+                style={{ "--sw": palColor(palette, k) }}
+                onClick={() => onSetAccent(node.id, k)} />
+            ))}
+          </div>
+          <div className="insp-role">{palLabel(palette, current)}</div>
         </div>
-        <div className="insp-role">{palLabel(palette, current)}</div>
-      </div>
+      )}
 
       <div className="insp-sec">
         <label className="insp-check">
@@ -1386,6 +1407,9 @@ const chartStyles = `
 
 /* ---------- matrix: toolbar toggle ---------- */
 .tb.tb-on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.tb.tb-public { background: var(--ok); color: var(--paper); border-color: var(--ok); }
+.tb.tb-public:hover { background: #4a6633; border-color: #4a6633; }
+.public-chip { font-size: 11px; font-style: italic; color: var(--ok); font-family: 'Iowan Old Style', Georgia, serif; }
 
 /* ---------- matrix: link-drawing affordances ---------- */
 .zoom-layer.is-linking .card { cursor: crosshair; }
