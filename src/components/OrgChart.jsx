@@ -47,6 +47,18 @@ const isDescendant = (root, ancestorId, id) => {
 const cloneTree = (n) => JSON.parse(JSON.stringify(n));
 const updateNode = (root, id, patch) => { const n = cloneTree(root); walk(n, (x) => { if (x.id === id) Object.assign(x, patch); }); return n; };
 const collectIds = (node) => { const s = new Set(); walk(node, (n) => s.add(n.id)); return s; };
+// ancestors-first path from the root down to `id` (empty if not found)
+const pathTo = (root, id) => {
+  let found = null;
+  const recur = (n, trail) => {
+    if (found) return;
+    const next = [...trail, n];
+    if (n.id === id) { found = next; return; }
+    (n.children || []).forEach((c) => recur(c, next));
+  };
+  recur(root, []);
+  return found || [];
+};
 
 // Drop any dotted link whose target no longer exists in the tree.
 const pruneDottedLinks = (root) => {
@@ -197,6 +209,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panning, setPanning] = useState(false);
+  const [focusId, setFocusId] = useState(null); // drill-down: show only this subtree (null = whole chart)
   const canvasRef = useRef(null);   // the .canvas viewport
   const treeRef = useRef(null);     // the natural-size tree layer (for Fit)
   const panRef = useRef(null);      // in-flight pan drag state
@@ -334,13 +347,16 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     setLinkingFrom(null);
     return true;
   };
-  // Esc cancels link-drawing.
+  // Esc cancels link-drawing, or backs out of a drilled-in team.
   useEffect(() => {
-    if (!linkingFrom) return;
-    const onKey = (e) => { if (e.key === "Escape") setLinkingFrom(null); };
+    if (!linkingFrom && !focusId) return;
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (linkingFrom) setLinkingFrom(null); else setFocusId(null);
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [linkingFrom]);
+  }, [linkingFrom, focusId]);
 
   const handleDragStart = (e, id) => {
     if (id === "root") { e.preventDefault(); return; }
@@ -433,6 +449,33 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 
   const links = useMemo(() => (tree ? flattenLinks(tree) : []), [tree]);
   const palette = useMemo(() => mergePalette(tree), [tree]);
+
+  // ---------- drill-down (focus on one team) ----------
+  // The focused subtree becomes the rendered root; edits still hit the real tree by id.
+  const focusNode = useMemo(() => (tree && focusId ? findNode(tree, focusId) : null), [tree, focusId]);
+  const focusPath = useMemo(() => (tree && focusNode ? pathTo(tree, focusId) : []), [tree, focusNode, focusId]);
+  const viewRoot = focusNode || tree;
+  const enterFocus = useCallback((id) => {
+    if (!id || id === "root") { setFocusId(null); return; }
+    // digging into a team should show it — un-collapse the team's root (no history entry,
+    // same as the chevron toggle)
+    setTree((prev) => (prev && findNode(prev, id)?.collapsed ? updateNode(prev, id, { collapsed: false }) : prev));
+    setFocusId(id); setSelectedId(null); setLinkingFrom(null);
+  }, []);
+  const exitFocus = useCallback(() => setFocusId(null), []);
+  // re-fit whenever the focused subtree changes (an explicit navigation, so always fit)
+  useEffect(() => {
+    if (!tree) return;
+    let cancelled = false, n = 0, timer = 0;
+    const tryFit = () => {
+      if (cancelled) return;
+      if (fitView()) return;
+      if (++n < 30) timer = setTimeout(tryFit, 50);
+    };
+    timer = setTimeout(tryFit, 0);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId]);
   const selectedNode = useMemo(() => (tree && selectedId ? findNode(tree, selectedId) : null), [tree, selectedId]);
   const nameOf = useCallback((id) => { const n = tree && findNode(tree, id); return n ? n.name : "—"; }, [tree]);
 
@@ -612,6 +655,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
         <MatrixLinks
           canvasRef={canvasRef} links={links} enabled={showLinks}
           viewKey={viewKey} selectedId={selectedId} palette={palette}
+          nameOf={nameOf} focused={!!focusId}
         />
         <div
           className={`zoom-layer ${linkingFrom ? "is-linking" : ""}`}
@@ -619,7 +663,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
         >
           <div className="tree-scroll" ref={treeRef}>
             <Node
-              node={tree} depth={0}
+              node={viewRoot} depth={0}
               onToggle={handleToggle} onAdd={handleAddChild} onDelete={handleDelete} onEdit={handleEdit}
               editingField={editingField} setEditingField={setEditingField}
               selectedId={selectedId} setSelectedId={setSelectedId}
@@ -629,11 +673,27 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
               matches={matches} searchActive={!!search.trim()}
               linkingFrom={linkingFrom} onLinkTarget={handleLinkTarget}
               onStartLink={handleStartLink} palette={palette}
+              onFocus={enterFocus}
             />
           </div>
         </div>
 
         <Legend tree={tree} palette={palette} onEdit={handleEditAccentMeta} />
+
+        {focusNode && (
+          <div className="crumbs">
+            <button className="crumb" onClick={exitFocus} title="Show the whole chart (Esc)">All</button>
+            {focusPath.map((n, i) => (
+              <React.Fragment key={n.id}>
+                <span className="crumb-sep">›</span>
+                {i === focusPath.length - 1
+                  ? <span className="crumb crumb-here">{n.name}</span>
+                  : <button className="crumb" onClick={() => enterFocus(n.id)}>{n.name}</button>}
+              </React.Fragment>
+            ))}
+            <span className="crumb-hint">double-click a card to dig in · Esc to back out</span>
+          </div>
+        )}
 
         <div className="zoom-controls">
           <button className="zc" onClick={() => zoomButton(1 / 1.2)} title="Zoom out">−</button>
@@ -662,6 +722,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           onToggleGroup={handleToggleGroup}
           onSetStack={handleSetStack}
           palette={palette}
+          onFocus={enterFocus}
         />
       )}
 
@@ -691,7 +752,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 function Node(props) {
   const { node, depth, onToggle, onAdd, onDelete, onEdit, editingField, setEditingField,
     selectedId, setSelectedId, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
-    draggedId, dragOverId, matches, searchActive, linkingFrom, onLinkTarget, onStartLink, palette } = props;
+    draggedId, dragOverId, matches, searchActive, linkingFrom, onLinkTarget, onStartLink, palette, onFocus } = props;
 
   const hasKids = (node.children || []).length > 0;
   const collapsed = node.collapsed && hasKids;
@@ -727,6 +788,7 @@ function Node(props) {
       onDrop={(e) => onDrop(e, node.id)}
       onDragEnd={onDragEnd}
       onClick={handleCardClick}
+      onDoubleClick={(e) => { if (hasKids && onFocus) { e.stopPropagation(); onFocus(node.id); } }}
     >
       <div className="card-rail" />
 
@@ -832,7 +894,7 @@ const cssId = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).repla
 // A screen-space SVG pinned over the .canvas viewport. It measures where each linked
 // card currently appears on screen (after pan/zoom) and draws a dashed arc that rises
 // above the row, clearing intervening cards. Recomputes on view change, resize, edits.
-function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette }) {
+function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, nameOf, focused }) {
   const [segs, setSegs] = useState([]);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
@@ -847,7 +909,22 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette }
     for (const link of links) {
       const a = findEl(link.from);
       const b = findEl(link.to);
-      if (!a || !b) continue; // an endpoint is collapsed away — skip its line
+      if (!a && !b) continue;
+      // In a drilled-in team, a link whose other end lives outside the team becomes a
+      // short labelled stub on the visible card — the relationship stays legible without
+      // dragging a line across the whole org. At full view a missing end is just collapsed.
+      if (!a || !b) {
+        if (!focused) continue;
+        const vis = a || b, isOut = !!a;
+        const r = vis.getBoundingClientRect();
+        out.push({
+          key: `${link.from}->${link.to}`, stub: true, from: link.from, to: link.to,
+          color: palColor(palette, link.accent),
+          x: r.right - cr.left, y: r.top - cr.top + r.height / 2,
+          text: `${isOut ? "→" : "←"} ${nameOf(isOut ? link.to : link.from)}`,
+        });
+        continue;
+      }
       const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
       // screen coords relative to the canvas viewport
       const ax = ra.left - cr.left, ay = ra.top - cr.top;
@@ -872,7 +949,7 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette }
     }
     setSegs(out);
     setSize({ w: cv.clientWidth, h: cv.clientHeight });
-  }, [canvasRef, links, enabled, palette]);
+  }, [canvasRef, links, enabled, palette, focused, nameOf]);
 
   useLayoutEffect(() => { measure(); }, [measure, viewKey]);
   useEffect(() => {
@@ -901,6 +978,18 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette }
       </defs>
       {segs.map((s) => {
         const active = !selTouches || s.from === selectedId || s.to === selectedId;
+        if (s.stub) {
+          const sw = s.text.length * 6.6 + 16;
+          return (
+            <g key={s.key} className={active ? "seg" : "seg seg-dim"}>
+              <path className="matrix-path" d={`M ${s.x} ${s.y} L ${s.x + 34} ${s.y}`} stroke={s.color} />
+              <g transform={`translate(${s.x + 34 + sw / 2}, ${s.y})`}>
+                <rect className="matrix-pill" x={-sw / 2} y={-9} width={sw} height={18} rx={9} stroke={s.color} />
+                <text className="matrix-label" x={0} y={0} fill={s.color}>{s.text}</text>
+              </g>
+            </g>
+          );
+        }
         const w = Math.max(6, (s.label || "").length * 6.6 + 14);
         return (
           <g key={s.key} className={active ? "seg" : "seg seg-dim"}>
@@ -965,7 +1054,7 @@ function LegendLabel({ value, onCommit }) {
 }
 
 // ---------- selection inspector (accent + dotted-line editing) ----------
-function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette }) {
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus }) {
   const dotted = node.dotted || [];
   const current = node.accent || "slate";
   const isGroup = !!node.group;
@@ -976,6 +1065,15 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
         <span className="insp-title">{node.name || "Untitled"}</span>
         <button className="x" onClick={onClose} title="Close">×</button>
       </div>
+
+      {(node.children || []).length > 0 && (
+        <div className="insp-sec">
+          <button className="tb tb-primary insp-add" style={{ marginTop: 0 }} onClick={() => onFocus(node.id)}>
+            <Maximize2 size={13} strokeWidth={1.8} /> Dig into this team
+          </button>
+          <div className="insp-hint">Shows just this team, big and clear. Dotted lines to people outside it become small labelled stubs.</div>
+        </div>
+      )}
 
       <div className="insp-sec">
         <div className="insp-label">Card colour</div>
@@ -1309,6 +1407,26 @@ const chartStyles = `
   font-family: inherit; font-size: 11px; color: var(--ink);
   border: 1px solid var(--ink); border-radius: 3px; padding: 1px 4px; margin: 0 -5px;
   outline: none; background: #fffdf7; width: 110px; box-sizing: border-box;
+}
+
+/* ---------- drill-down breadcrumbs ---------- */
+.crumbs {
+  position: absolute; left: 14px; top: 14px; z-index: 6;
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  background: var(--paper); border: 1px solid var(--rule);
+  border-radius: 9px; padding: 6px 10px; box-shadow: var(--shadow);
+  font-family: 'Iowan Old Style', Georgia, serif; font-size: 13px;
+}
+.crumb {
+  font-family: inherit; font-size: 13px; background: transparent; border: none;
+  color: var(--ink-soft); cursor: pointer; padding: 2px 6px; border-radius: 5px;
+}
+.crumb:hover { background: var(--paper-2); color: var(--ink); }
+.crumb-here { color: var(--ink); font-weight: 600; cursor: default; }
+.crumb-sep { color: var(--ink-faint); }
+.crumb-hint {
+  margin-left: 10px; padding-left: 10px; border-left: 1px solid var(--rule);
+  font-size: 11px; font-style: italic; color: var(--ink-faint);
 }
 
 /* ---------- matrix: band (grouping container) ---------- */
