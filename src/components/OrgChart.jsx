@@ -569,6 +569,8 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   }, [focusId]);
   const selectedNode = useMemo(() => (tree && selectedId ? findNode(tree, selectedId) : null), [tree, selectedId]);
   const selectedPos = useMemo(() => (tree && selectedId ? siblingPos(tree, selectedId) : null), [tree, selectedId]);
+  // dotted lines drawn BY OTHER cards that point at the selected one (so they can be seen/removed from this side)
+  const inboundForSelected = useMemo(() => (selectedId ? links.filter((l) => l.to === selectedId) : []), [links, selectedId]);
   const nameOf = useCallback((id) => { const n = tree && findNode(tree, id); return n ? n.name : "—"; }, [tree]);
 
   // ---------- pan / zoom canvas ----------
@@ -829,6 +831,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           publicView={publicView}
           pos={selectedPos}
           onShift={handleShift}
+          inbound={inboundForSelected}
         />
       )}
 
@@ -1171,7 +1174,7 @@ function LegendLabel({ value, onCommit }) {
 }
 
 // ---------- selection inspector (accent + dotted-line editing) ----------
-function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus, people, onAddLink, publicView, pos, onShift }) {
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus, people, onAddLink, publicView, pos, onShift, inbound = [] }) {
   const dotted = node.dotted || [];
   const current = node.accent || "slate";
   const isGroup = !!node.group;
@@ -1249,6 +1252,21 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
         <button className="tb insp-add insp-secondary" onClick={() => onStartLink(node.id)}>
           <Spline size={12} strokeWidth={1.7} /> …or click a card on the canvas
         </button>
+        {inbound.length > 0 && (
+          <>
+            <div className="insp-label" style={{ marginTop: 14 }}>Dotted lines to here</div>
+            <div className="insp-hint" style={{ marginTop: 0, marginBottom: 6 }}>Drawn by other cards pointing at this one — shown as "←" stubs.</div>
+            {inbound.map((l) => (
+              <div className="link-row" key={l.from}>
+                <Spline size={12} strokeWidth={1.7} />
+                <span className="link-to">← {nameOf(l.from)}</span>
+                <button className="link-x" title="Remove this line" onClick={() => onRemoveLink(l.from, node.id)}>
+                  <X size={12} strokeWidth={2} />
+                </button>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   );
