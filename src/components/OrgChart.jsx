@@ -340,6 +340,8 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   }));
   const handleStartLink = (id) => { setLinkingFrom(id); setSelectedId(id); };
   const handleRemoveLink = (fromId, toId) => apply((prev) => removeDottedLink(prev, fromId, toId));
+  // add a dotted line to a person picked by name (works even if they're off-screen / in another team)
+  const handleAddLinkTo = (fromId, toId) => apply((prev) => addDottedLink(prev, fromId, toId));
   // Called when a card is clicked while we're in "draw dotted line" mode.
   const handleLinkTarget = (targetId) => {
     if (!linkingFrom) return false;
@@ -448,6 +450,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   }, [tree, search]);
 
   const links = useMemo(() => (tree ? flattenLinks(tree) : []), [tree]);
+  const people = useMemo(() => (tree ? flatten(tree) : []), [tree]); // everyone, for the link-by-name picker
   const palette = useMemo(() => mergePalette(tree), [tree]);
 
   // ---------- drill-down (focus on one team) ----------
@@ -624,7 +627,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           <button className="tb" onClick={() => apply(expandAll)}>Expand all</button>
           <button className="tb" onClick={() => apply(collapseAllExceptRoot)}>Collapse all</button>
           <div className="tb-sep" />
-          <button className={`tb ${showLinks ? "tb-on" : ""}`} onClick={() => setShowLinks((v) => !v)} title="Show or hide dotted matrix lines">
+          <button className={`tb ${showLinks ? "tb-on" : ""}`} onClick={() => setShowLinks((v) => !v)} title="Dotted lines are shown when you dig into a team — this toggles them there">
             <Spline size={14} strokeWidth={1.5} /> Dotted lines
           </button>
           <div className="tb-sep" />
@@ -652,8 +655,9 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
         onMouseDown={onCanvasMouseDown}
         onDragOver={(e) => e.preventDefault()}
       >
+        {/* dotted lines are only drawn once you've dug into a team — the overview stays clean */}
         <MatrixLinks
-          canvasRef={canvasRef} links={links} enabled={showLinks}
+          canvasRef={canvasRef} links={links} enabled={showLinks && !!focusId}
           viewKey={viewKey} selectedId={selectedId} palette={palette}
           nameOf={nameOf} focused={!!focusId}
         />
@@ -723,6 +727,8 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           onSetStack={handleSetStack}
           palette={palette}
           onFocus={enterFocus}
+          people={people}
+          onAddLink={handleAddLinkTo}
         />
       )}
 
@@ -1054,7 +1060,7 @@ function LegendLabel({ value, onCommit }) {
 }
 
 // ---------- selection inspector (accent + dotted-line editing) ----------
-function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus }) {
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus, people, onAddLink }) {
   const dotted = node.dotted || [];
   const current = node.accent || "slate";
   const isGroup = !!node.group;
@@ -1104,7 +1110,7 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
 
       <div className="insp-sec">
         <div className="insp-label">Dotted lines from here</div>
-        {dotted.length === 0 && <div className="insp-empty">None yet — draw one to another card.</div>}
+        {dotted.length === 0 && <div className="insp-empty">None yet.</div>}
         {dotted.map((d) => (
           <div className="link-row" key={d.to}>
             <Spline size={12} strokeWidth={1.7} />
@@ -1114,10 +1120,49 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
             </button>
           </div>
         ))}
-        <button className="tb tb-primary insp-add" onClick={() => onStartLink(node.id)}>
-          <Spline size={13} strokeWidth={1.7} /> Draw dotted line
+        <LinkSearch people={people || []} excludeIds={[node.id, ...dotted.map((d) => d.to)]}
+          onPick={(id) => onAddLink(node.id, id)} />
+        <button className="tb insp-add insp-secondary" onClick={() => onStartLink(node.id)}>
+          <Spline size={12} strokeWidth={1.7} /> …or click a card on the canvas
         </button>
       </div>
+    </div>
+  );
+}
+
+// Search everyone in the chart by name/title/team and pick one to link to.
+// Works regardless of what's on screen — the whole point when drilled into a team.
+function LinkSearch({ people, excludeIds, onPick }) {
+  const [q, setQ] = useState("");
+  const ex = new Set(excludeIds);
+  const ql = q.trim().toLowerCase();
+  const results = ql
+    ? people.filter((p) => !ex.has(p.id) && (
+        (p.name || "").toLowerCase().includes(ql) ||
+        (p.title || "").toLowerCase().includes(ql) ||
+        (p.team || "").toLowerCase().includes(ql)))
+      .slice(0, 8)
+    : [];
+  const pick = (id) => { onPick(id); setQ(""); };
+  return (
+    <div className="link-search">
+      <input className="link-search-input" placeholder="Add dotted line to… type a name" value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && results[0]) { e.preventDefault(); pick(results[0].id); }
+          if (e.key === "Escape") setQ("");
+        }} />
+      {ql && (
+        <div className="link-results">
+          {results.length === 0 && <div className="link-result-empty">No one matches "{q}"</div>}
+          {results.map((p) => (
+            <button key={p.id} className="link-result" onClick={() => pick(p.id)}>
+              <span className="lr-name">{p.name}</span>
+              <span className="lr-meta">{[p.title, p.manager && `↳ ${p.manager}`].filter(Boolean).join(" · ")}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1527,5 +1572,28 @@ const chartStyles = `
 }
 .link-x:hover { color: var(--accent); background: var(--paper-2); }
 .insp-add { margin-top: 10px; width: 100%; justify-content: center; }
+.insp-secondary { font-size: 11.5px; color: var(--ink-soft); margin-top: 8px; }
+.link-search { margin-top: 10px; }
+.link-search-input {
+  width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12.5px;
+  padding: 7px 9px; border: 1px solid var(--rule); border-radius: 6px;
+  background: #fffdf7; outline: none; color: var(--ink);
+}
+.link-search-input:focus { border-color: var(--ink); }
+.link-search-input::placeholder { color: var(--ink-faint); font-style: italic; }
+.link-results {
+  margin-top: 4px; border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--paper); box-shadow: var(--shadow-lift); max-height: 230px; overflow: auto;
+}
+.link-result {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  width: 100%; text-align: left; padding: 7px 10px; border: none;
+  border-bottom: 1px solid var(--rule-soft); background: transparent; cursor: pointer; font-family: inherit;
+}
+.link-result:last-child { border-bottom: none; }
+.link-result:hover { background: var(--paper-2); }
+.lr-name { font-size: 13px; font-weight: 600; color: var(--ink); font-family: 'Iowan Old Style', Georgia, serif; }
+.lr-meta { font-size: 10.5px; color: var(--ink-faint); font-style: italic; }
+.link-result-empty { padding: 8px 10px; font-size: 11.5px; font-style: italic; color: var(--ink-faint); }
 `;
 
