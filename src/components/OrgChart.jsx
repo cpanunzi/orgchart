@@ -137,6 +137,54 @@ const moveNode = (root, draggedId, newParentId) => {
 const collapseAllExceptRoot = (root) => { const n = cloneTree(root); walk(n, (x) => { x.collapsed = x.id !== "root"; }); return n; };
 const expandAll = (root) => { const n = cloneTree(root); walk(n, (x) => { x.collapsed = false; }); return n; };
 
+// Reorder: put `draggedId` immediately before/after `targetId` among the target's siblings.
+const moveBeside = (root, draggedId, targetId, after) => {
+  if (draggedId === targetId || draggedId === "root" || targetId === "root") return root;
+  if (isDescendant(root, draggedId, targetId)) return root; // can't drop into own subtree
+  const next = cloneTree(root);
+  let dragged = null;
+  const detach = (node) => {
+    if (!node.children) return;
+    const i = node.children.findIndex((c) => c.id === draggedId);
+    if (i >= 0) { dragged = node.children[i]; node.children.splice(i, 1); return; }
+    node.children.forEach(detach);
+  };
+  detach(next);
+  if (!dragged) return root;
+  let done = false;
+  walk(next, (n) => {
+    if (done || !n.children) return;
+    const i = n.children.findIndex((c) => c.id === targetId);
+    if (i >= 0) { n.children.splice(after ? i + 1 : i, 0, dragged); n.collapsed = false; done = true; }
+  });
+  return done ? next : root;
+};
+// Shift a card `delta` places among its siblings (−1 = earlier, +1 = later).
+const shiftSibling = (root, id, delta) => {
+  if (id === "root") return root;
+  const next = cloneTree(root);
+  let done = false;
+  walk(next, (n) => {
+    if (done || !n.children) return;
+    const i = n.children.findIndex((c) => c.id === id);
+    if (i < 0) return;
+    const j = Math.max(0, Math.min(n.children.length - 1, i + delta));
+    if (j !== i) { const [c] = n.children.splice(i, 1); n.children.splice(j, 0, c); }
+    done = true;
+  });
+  return next;
+};
+// Where a card sits among its siblings: { index, count } (root → null).
+const siblingPos = (root, id) => {
+  let res = null;
+  walk(root, (n) => {
+    if (res || !n.children) return;
+    const i = n.children.findIndex((c) => c.id === id);
+    if (i >= 0) res = { index: i, count: n.children.length };
+  });
+  return res;
+};
+
 const flatten = (root) => {
   const out = [];
   const recur = (n, mgr) => {
@@ -199,6 +247,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   const [editingField, setEditingField] = useState(null);
   const [draggedId, setDraggedId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
+  const [dragOverZone, setDragOverZone] = useState(null); // "before" | "after" | "into" — where on the hovered card
   const [search, setSearch] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
@@ -369,24 +418,53 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [linkingFrom, focusId]);
+  // Alt+←/→ nudges the selected card earlier/later among its siblings (not while typing).
+  useEffect(() => {
+    if (!selectedId) return;
+    const onKey = (e) => {
+      if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      apply((prev) => shiftSibling(prev, selectedId, e.key === "ArrowLeft" ? -1 : 1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   const handleDragStart = (e, id) => {
     if (id === "root") { e.preventDefault(); return; }
-    setDraggedId(id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", id);
+    setDraggedId(id);
+    if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", id); }
+  };
+  // Which part of the hovered card the pointer is over: the outer ~28% on each side means
+  // "insert before/after this card as a sibling"; the middle means "make it a report".
+  const zoneFor = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - r.left) / Math.max(1, r.width);
+    return x < 0.28 ? "before" : x > 0.72 ? "after" : "into";
   };
   const handleDragOver = (e, id) => {
     if (!draggedId || draggedId === id) return;
     if (isDescendant(tree, draggedId, id)) return;
-    e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOverId(id);
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const z = zoneFor(e);
+    if (dragOverId !== id) setDragOverId(id);
+    if (dragOverZone !== z) setDragOverZone(z);
   };
-  const handleDragLeave = (id) => { if (dragOverId === id) setDragOverId(null); };
-  const handleDrop = (e, newParentId) => {
+  const handleDragLeave = (id) => { if (dragOverId === id) { setDragOverId(null); setDragOverZone(null); } };
+  const handleDrop = (e, targetId) => {
     e.preventDefault(); e.stopPropagation();
     if (!draggedId) return;
-    apply((prev) => moveNode(prev, draggedId, newParentId));
-    setDraggedId(null); setDragOverId(null);
+    const z = zoneFor(e);
+    if (z === "into") apply((prev) => moveNode(prev, draggedId, targetId));
+    else apply((prev) => moveBeside(prev, draggedId, targetId, z === "after"));
+    setDraggedId(null); setDragOverId(null); setDragOverZone(null);
   };
-  const handleDragEnd = () => { setDraggedId(null); setDragOverId(null); };
+  const handleDragEnd = () => { setDraggedId(null); setDragOverId(null); setDragOverZone(null); };
+  const handleShift = (id, delta) => apply((prev) => shiftSibling(prev, id, delta));
 
   const exportJSON = () => {
     const data = JSON.stringify(tree, null, 2);
@@ -490,6 +568,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId]);
   const selectedNode = useMemo(() => (tree && selectedId ? findNode(tree, selectedId) : null), [tree, selectedId]);
+  const selectedPos = useMemo(() => (tree && selectedId ? siblingPos(tree, selectedId) : null), [tree, selectedId]);
   const nameOf = useCallback((id) => { const n = tree && findNode(tree, id); return n ? n.name : "—"; }, [tree]);
 
   // ---------- pan / zoom canvas ----------
@@ -663,7 +742,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
         <span className="dot">·</span>
         <span><strong>{stats.teams}</strong> teams</span>
         <span className="dot">·</span>
-        <span className="hint">drag a card onto another to reassign · click a field to edit · ⌘/Ctrl-click to add a report</span>
+        <span className="hint">drag onto a card to reassign · drop on its left/right edge to reorder · click a field to edit · ⌘/Ctrl-click to add a report</span>
       </div>
 
       <main
@@ -690,7 +769,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
               selectedId={selectedId} setSelectedId={setSelectedId}
               onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={handleDragLeave}
               onDrop={handleDrop} onDragEnd={handleDragEnd}
-              draggedId={draggedId} dragOverId={dragOverId}
+              draggedId={draggedId} dragOverId={dragOverId} dragOverZone={dragOverZone}
               matches={matches} searchActive={!!search.trim()}
               linkingFrom={linkingFrom} onLinkTarget={handleLinkTarget}
               onStartLink={handleStartLink} palette={palette}
@@ -748,6 +827,8 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           people={people}
           onAddLink={handleAddLinkTo}
           publicView={publicView}
+          pos={selectedPos}
+          onShift={handleShift}
         />
       )}
 
@@ -777,7 +858,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 function Node(props) {
   const { node, depth, onToggle, onAdd, onDelete, onEdit, editingField, setEditingField,
     selectedId, setSelectedId, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
-    draggedId, dragOverId, matches, searchActive, linkingFrom, onLinkTarget, onStartLink, palette, onFocus, publicView } = props;
+    draggedId, dragOverId, dragOverZone, matches, searchActive, linkingFrom, onLinkTarget, onStartLink, palette, onFocus, publicView } = props;
 
   const hasKids = (node.children || []).length > 0;
   const collapsed = node.collapsed && hasKids;
@@ -804,7 +885,7 @@ function Node(props) {
   const cardEl = (
     <div
       data-node-id={node.id}
-      className={["card", isBand ? "card-band-head" : "", isSelected ? "card-sel" : "", isDragOver ? "card-over" : "", isDragging ? "card-dragging" : "", dimmed ? "card-dim" : "", node.id === "root" ? "card-root" : "", hasAccent ? "card-accent" : "", isLinkSource ? "card-link-src" : "", isLinkTarget ? "card-link-target" : ""].join(" ")}
+      className={["card", isBand ? "card-band-head" : "", isSelected ? "card-sel" : "", isDragOver ? (dragOverZone === "before" ? "card-over-before" : dragOverZone === "after" ? "card-over-after" : "card-over") : "", isDragging ? "card-dragging" : "", dimmed ? "card-dim" : "", node.id === "root" ? "card-root" : "", hasAccent ? "card-accent" : "", isLinkSource ? "card-link-src" : "", isLinkTarget ? "card-link-target" : ""].join(" ")}
       style={hasAccent ? { "--card-accent": accent } : undefined}
       draggable={node.id !== "root"}
       onDragStart={(e) => onDragStart(e, node.id)}
@@ -949,7 +1030,7 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, 
         // the row). If the card's reports are showing underneath, hang it ABOVE instead.
         const branch = vis.closest(".branch");
         const expanded = !!(branch && (branch.querySelector(":scope > .children-wrap") || branch.querySelector(":scope > .band > .band-body")));
-        const gap = 12 + idx * 22;
+        const gap = 16 + idx * 30; // room for the larger pills, stacked
         const y0 = expanded ? r.top - cr.top : r.bottom - cr.top;
         out.push({
           key: `${link.from}->${link.to}`, stub: true, from: link.from, to: link.to,
@@ -1014,26 +1095,26 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, 
       {segs.map((s) => {
         const active = !selTouches || s.from === selectedId || s.to === selectedId;
         if (s.stub) {
-          const sw = s.text.length * 6.6 + 16;
-          const py = s.up ? s.y1 - 9 : s.y1 + 9; // pill centre sits just past the line's end
+          const sw = s.text.length * 7.6 + 22;
+          const py = s.up ? s.y1 - 12 : s.y1 + 12; // pill centre sits just past the line's end
           return (
             <g key={s.key} className={active ? "seg" : "seg seg-dim"}>
               <path className="matrix-path" d={`M ${s.lx} ${s.y0} L ${s.lx} ${s.y1}`} stroke={s.color} />
               <g transform={`translate(${s.pillLeft + sw / 2}, ${py})`}>
-                <rect className="matrix-pill" x={-sw / 2} y={-9} width={sw} height={18} rx={9} stroke={s.color} />
+                <rect className="matrix-pill" x={-sw / 2} y={-12} width={sw} height={24} rx={12} stroke={s.color} />
                 <text className="matrix-label" x={0} y={0} fill={s.color}>{s.text}</text>
               </g>
             </g>
           );
         }
-        const w = Math.max(6, (s.label || "").length * 6.6 + 14);
+        const w = Math.max(6, (s.label || "").length * 7.6 + 22);
         return (
           <g key={s.key} className={active ? "seg" : "seg seg-dim"}>
             <path className="matrix-path" d={s.d} stroke={s.color}
               markerEnd={`url(#arw-${s.color.replace("#", "")})`} />
             {s.label && (
               <g transform={`translate(${s.mx}, ${s.my})`}>
-                <rect className="matrix-pill" x={-w / 2} y={-9} width={w} height={18} rx={9}
+                <rect className="matrix-pill" x={-w / 2} y={-12} width={w} height={24} rx={12}
                   stroke={s.color} />
                 <text className="matrix-label" x={0} y={0} fill={s.color}>{s.label}</text>
               </g>
@@ -1090,7 +1171,7 @@ function LegendLabel({ value, onCommit }) {
 }
 
 // ---------- selection inspector (accent + dotted-line editing) ----------
-function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus, people, onAddLink, publicView }) {
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus, people, onAddLink, publicView, pos, onShift }) {
   const dotted = node.dotted || [];
   const current = node.accent || "slate";
   const isGroup = !!node.group;
@@ -1101,6 +1182,17 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
         <span className="insp-title">{node.name || "Untitled"}</span>
         <button className="x" onClick={onClose} title="Close">×</button>
       </div>
+
+      {pos && pos.count > 1 && (
+        <div className="insp-sec">
+          <div className="insp-label">Order · {pos.index + 1} of {pos.count}</div>
+          <div className="insp-seg">
+            <button className="seg-btn" disabled={pos.index === 0} onClick={() => onShift(node.id, -1)} title="Move earlier (Alt+←)">◀ Earlier</button>
+            <button className="seg-btn" disabled={pos.index === pos.count - 1} onClick={() => onShift(node.id, 1)} title="Move later (Alt+→)">Later ▶</button>
+          </div>
+          <div className="insp-hint">Or drag the card and drop it on the left/right edge of a sibling to put it before/after.</div>
+        </div>
+      )}
 
       {(node.children || []).length > 0 && (
         <div className="insp-sec">
@@ -1332,6 +1424,14 @@ const chartStyles = `
 .card-over { border-color: var(--accent); border-style: dashed; transform: scale(1.02);
   box-shadow: 0 0 0 3px rgba(184, 68, 42, 0.14), var(--shadow-lift); }
 .card-dragging { opacity: 0.4; }
+/* drop-zone feedback for reordering: an insertion bar in the gap beside the card */
+.card-over-before, .card-over-after { border-color: var(--accent); }
+.card-over-before::before, .card-over-after::after {
+  content: ""; position: absolute; top: -6px; bottom: -6px; width: 4px; border-radius: 2px;
+  background: var(--accent); box-shadow: 0 0 0 3px rgba(184, 68, 42, 0.18);
+}
+.card-over-before::before { left: -14px; }
+.card-over-after::after { right: -14px; }
 .card-dim { opacity: 0.32; }
 
 .card-head { display: flex; align-items: center; gap: 3px; margin-bottom: 2px; }
@@ -1438,10 +1538,10 @@ const chartStyles = `
   fill: none; stroke-width: 2;
   stroke-dasharray: 1 6; stroke-linecap: round;
 }
-.matrix-pill { fill: #fffdf7; stroke-width: 1.2; }
+.matrix-pill { fill: #fffdf7; stroke-width: 1.4; }
 .matrix-label {
   font-family: 'Helvetica Neue', Arial, sans-serif;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.03em;
+  font-size: 12.5px; font-weight: 700; letter-spacing: 0.02em;
   text-anchor: middle; dominant-baseline: central;
 }
 
@@ -1595,6 +1695,8 @@ const chartStyles = `
 .seg-btn:hover { background: var(--paper-2); }
 .seg-on { background: var(--ink); color: var(--paper); }
 .seg-on:hover { background: var(--ink); }
+.seg-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.seg-btn:disabled:hover { background: transparent; }
 .insp-empty { font-size: 12px; font-style: italic; color: var(--ink-faint); }
 .link-row {
   display: flex; align-items: center; gap: 6px;
