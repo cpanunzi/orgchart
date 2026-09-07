@@ -931,6 +931,7 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, 
     // so arrows land on the band's near edge rather than its far-left header card
     const findEl = (id) => cv.querySelector(`[data-band-id="${cssId(id)}"]`) || cv.querySelector(`[data-node-id="${cssId(id)}"]`);
     const out = [];
+    const stubIdx = new Map(); // how many stubs already hang off a given card (to stack them)
     for (const link of links) {
       const a = findEl(link.from);
       const b = findEl(link.to);
@@ -942,10 +943,19 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, 
         if (!focused) continue;
         const vis = a || b, isOut = !!a;
         const r = vis.getBoundingClientRect();
+        const visId = isOut ? link.from : link.to;
+        const idx = stubIdx.get(visId) || 0; stubIdx.set(visId, idx + 1);
+        // Hang the stub BELOW the card (never sideways — that runs into the next card in
+        // the row). If the card's reports are showing underneath, hang it ABOVE instead.
+        const branch = vis.closest(".branch");
+        const expanded = !!(branch && (branch.querySelector(":scope > .children-wrap") || branch.querySelector(":scope > .band > .band-body")));
+        const gap = 12 + idx * 22;
+        const y0 = expanded ? r.top - cr.top : r.bottom - cr.top;
         out.push({
           key: `${link.from}->${link.to}`, stub: true, from: link.from, to: link.to,
           color: publicView ? palColor(palette, "slate") : palColor(palette, link.accent),
-          x: r.right - cr.left, y: r.top - cr.top + r.height / 2,
+          lx: r.left - cr.left + 22, y0, y1: expanded ? y0 - gap : y0 + gap, up: expanded,
+          pillLeft: r.left - cr.left + 10,
           text: `${isOut ? "→" : "←"} ${nameOf(isOut ? link.to : link.from)}`,
         });
         continue;
@@ -1005,10 +1015,11 @@ function MatrixLinks({ canvasRef, links, enabled, viewKey, selectedId, palette, 
         const active = !selTouches || s.from === selectedId || s.to === selectedId;
         if (s.stub) {
           const sw = s.text.length * 6.6 + 16;
+          const py = s.up ? s.y1 - 9 : s.y1 + 9; // pill centre sits just past the line's end
           return (
             <g key={s.key} className={active ? "seg" : "seg seg-dim"}>
-              <path className="matrix-path" d={`M ${s.x} ${s.y} L ${s.x + 34} ${s.y}`} stroke={s.color} />
-              <g transform={`translate(${s.x + 34 + sw / 2}, ${s.y})`}>
+              <path className="matrix-path" d={`M ${s.lx} ${s.y0} L ${s.lx} ${s.y1}`} stroke={s.color} />
+              <g transform={`translate(${s.pillLeft + sw / 2}, ${py})`}>
                 <rect className="matrix-pill" x={-sw / 2} y={-9} width={sw} height={18} rx={9} stroke={s.color} />
                 <text className="matrix-label" x={0} y={0} fill={s.color}>{s.text}</text>
               </g>
