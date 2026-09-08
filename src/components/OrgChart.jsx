@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from "react";
-import { ChevronDown, ChevronRight, Plus, Trash2, Download, Upload, Users, Search, RotateCcw, FileDown, ArrowLeft, Edit2, Spline, X, Maximize2, Eye, EyeOff } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Trash2, Users, Search, RotateCcw, ArrowLeft, Edit2, Spline, X, Maximize2, Eye, EyeOff } from "lucide-react";
 import { supabase } from "../lib/supabase.js";
 import { sharedStyles } from "./styles.js";
 
@@ -196,47 +196,6 @@ const flatten = (root) => {
 };
 const countDescendants = (n) => { let c = 0; (n.children || []).forEach((ch) => { c += 1 + countDescendants(ch); }); return c; };
 
-const toCSV = (root) => {
-  const rows = flatten(root);
-  const esc = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  return "Name,Title,Team,Manager\n" + rows.map((r) => [r.name, r.title, r.team, r.manager].map(esc).join(",")).join("\n");
-};
-const fromCSV = (text) => {
-  const rows = []; let cur = [], field = "", inQ = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQ) {
-      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
-      else if (c === '"') inQ = false;
-      else field += c;
-    } else {
-      if (c === '"') inQ = true;
-      else if (c === ",") { cur.push(field); field = ""; }
-      else if (c === "\n") { cur.push(field); rows.push(cur); cur = []; field = ""; }
-      else if (c === "\r") {} else field += c;
-    }
-  }
-  if (field.length || cur.length) { cur.push(field); rows.push(cur); }
-  if (!rows.length) return null;
-  const header = rows[0].map((h) => h.trim().toLowerCase());
-  const ni = header.indexOf("name"), ti = header.indexOf("title"), tmi = header.indexOf("team"), mi = header.indexOf("manager");
-  if (ni < 0) return null;
-  const records = rows.slice(1).filter((r) => r.some((v) => v && v.length)).map((r) => ({
-    name: r[ni] || "", title: ti >= 0 ? (r[ti] || "") : "", team: tmi >= 0 ? (r[tmi] || "") : "", manager: mi >= 0 ? (r[mi] || "") : "",
-  }));
-  const byName = {};
-  records.forEach((r) => { byName[r.name] = { id: uid(), name: r.name, title: r.title, team: r.team, collapsed: false, children: [] }; });
-  let root = null;
-  records.forEach((r) => {
-    const node = byName[r.name];
-    if (!r.manager || !byName[r.manager]) {
-      if (!root) { node.id = "root"; root = node; }
-    } else { byName[r.manager].children.push(node); }
-  });
-  if (!root) root = { id: "root", name: "Root", title: "", team: "", collapsed: false, children: Object.values(byName) };
-  return root;
-};
-
 // ---------- main component ----------
 export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDeleted }) {
   const [tree, setTree] = useState(null);
@@ -248,9 +207,6 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   const [draggedId, setDraggedId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
   const [dragOverZone, setDragOverZone] = useState(null); // "before" | "after" | "into" — where on the hovered card
-  const [search, setSearch] = useState("");
-  const [showImport, setShowImport] = useState(false);
-  const [importText, setImportText] = useState("");
   const [saveStatus, setSaveStatus] = useState("synced"); // synced | saving | error
   const [loadError, setLoadError] = useState(null);
   const [linkingFrom, setLinkingFrom] = useState(null); // id of node we're drawing a dotted line FROM
@@ -277,7 +233,6 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   const panRef = useRef(null);      // in-flight pan drag state
   const didFitRef = useRef(false);
   const userMovedRef = useRef(false); // has the user panned/zoomed yet?
-  const fileInputRef = useRef(null);
   const saveTimer = useRef(null);
   const hasLoadedRef = useRef(false);
   const isDirtyRef = useRef(false);
@@ -479,47 +434,6 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   const handleDragEnd = () => { setDraggedId(null); setDragOverId(null); setDragOverZone(null); };
   const handleShift = (id, delta) => apply((prev) => shiftSibling(prev, id, delta));
 
-  const exportJSON = () => {
-    const data = JSON.stringify(tree, null, 2);
-    const blob = new Blob([data], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `${name.replace(/[^a-z0-9]/gi, "-")}.json`; a.click();
-    URL.revokeObjectURL(url);
-  };
-  const exportCSV = () => {
-    const blob = new Blob([toCSV(tree)], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `${name.replace(/[^a-z0-9]/gi, "-")}.csv`; a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleFileImport = (e) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = String(ev.target.result || "");
-      try {
-        if (file.name.endsWith(".json")) {
-          const data = JSON.parse(text);
-          if (data && data.id && data.name !== undefined) apply(() => data);
-        } else {
-          const parsed = fromCSV(text);
-          if (parsed) apply(() => parsed);
-        }
-      } catch (err) { alert("Could not parse file: " + err.message); }
-    };
-    reader.readAsText(file);
-    e.target.value = "";
-  };
-  const importFromText = () => {
-    try {
-      const parsed = importText.trim().startsWith("{") ? JSON.parse(importText) : fromCSV(importText);
-      if (parsed) { apply(() => parsed); setShowImport(false); setImportText(""); }
-    } catch (err) { alert("Could not parse: " + err.message); }
-  };
-
   const saveName = (nextName) => {
     setName(nextName);
     scheduleSave(undefined, nextName);
@@ -527,28 +441,11 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     onRenamed && onRenamed();
   };
 
-  const handleDeleteChart = async () => {
-    if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return;
-    await supabase.from("charts").delete().eq("id", chartId);
-    onDeleted && onDeleted();
-  };
-
   const stats = useMemo(() => {
     if (!tree) return { total: 0, teams: 0 };
     const flat = flatten(tree);
     return { total: flat.length, teams: new Set(flat.map((p) => p.team).filter(Boolean)).size };
   }, [tree]);
-
-  const matches = useMemo(() => {
-    if (!tree || !search.trim()) return new Set();
-    const q = search.toLowerCase(); const ids = new Set();
-    walk(tree, (n) => {
-      if ((n.name || "").toLowerCase().includes(q) ||
-          (n.title || "").toLowerCase().includes(q) ||
-          (n.team || "").toLowerCase().includes(q)) ids.add(n.id);
-    });
-    return ids;
-  }, [tree, search]);
 
   const links = useMemo(() => (tree ? flattenLinks(tree) : []), [tree]);
   const people = useMemo(() => (tree ? flatten(tree) : []), [tree]); // everyone, for the link-by-name picker
@@ -729,13 +626,8 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           </div>
         </div>
 
-        <div className="search-wrap">
-          <Search size={14} strokeWidth={1.5} />
-          <input className="search" placeholder="Find a person, title, or team" value={search} onChange={(e) => setSearch(e.target.value)} />
-        </div>
-
         <div className="toolbar">
-          <button className={`tb ${lookupOpen ? "tb-on" : ""}`} onClick={() => setLookupOpen((v) => !v)} title="Look up a person — who's above and below them, and every dotted line (⌘K)">
+          <button className={`tb ${lookupOpen ? "tb-on" : ""}`} onClick={() => setLookupOpen((v) => !v)} title="Look up a person — their reporting line, who they manage, and every dotted line (⌘K)">
             <Search size={14} strokeWidth={1.5} /> Look up
           </button>
           <div className="tb-sep" />
@@ -753,14 +645,6 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
             {publicView ? <EyeOff size={14} strokeWidth={1.5} /> : <Eye size={14} strokeWidth={1.5} />} Public view
           </button>
           {publicView && <span className="public-chip">colours &amp; legend hidden · share this URL</span>}
-          <div className="tb-sep" />
-          <button className="tb" onClick={() => fileInputRef.current?.click()}><Upload size={14} strokeWidth={1.5} /> Import</button>
-          <input ref={fileInputRef} type="file" accept=".json,.csv" onChange={handleFileImport} style={{ display: "none" }} />
-          <button className="tb" onClick={() => setShowImport(true)}>Paste</button>
-          <button className="tb" onClick={exportCSV}><FileDown size={14} strokeWidth={1.5} /> CSV</button>
-          <button className="tb" onClick={exportJSON}><Download size={14} strokeWidth={1.5} /> JSON</button>
-          <div className="tb-sep" />
-          <button className="tb tb-danger" onClick={handleDeleteChart}>Delete chart</button>
         </div>
       </header>
 
@@ -806,7 +690,6 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
               onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={handleDragLeave}
               onDrop={handleDrop} onDragEnd={handleDragEnd}
               draggedId={draggedId} dragOverId={dragOverId} dragOverZone={dragOverZone}
-              matches={matches} searchActive={!!search.trim()}
               linkingFrom={linkingFrom} onLinkTarget={handleLinkTarget}
               onStartLink={handleStartLink} palette={palette}
               onFocus={enterFocus}
@@ -869,25 +752,6 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           inbound={inboundForSelected}
         />
       )}
-
-      {showImport && (
-        <div className="modal-bg" onClick={() => setShowImport(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <div>Paste JSON or CSV</div>
-              <button className="x" onClick={() => setShowImport(false)}>×</button>
-            </div>
-            <div className="modal-body">
-              <p className="modal-hint">CSV columns: <code>Name, Title, Team, Manager</code>. The first person with no manager becomes the root.</p>
-              <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Paste here..." />
-              <div className="modal-actions">
-                <button className="tb" onClick={() => setShowImport(false)}>Cancel</button>
-                <button className="tb tb-primary" onClick={importFromText}>Import</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -896,14 +760,13 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 function Node(props) {
   const { node, depth, onToggle, onAdd, onDelete, onEdit, editingField, setEditingField,
     selectedId, setSelectedId, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
-    draggedId, dragOverId, dragOverZone, matches, searchActive, linkingFrom, onLinkTarget, onStartLink, palette, onFocus, publicView } = props;
+    draggedId, dragOverId, dragOverZone, linkingFrom, onLinkTarget, onStartLink, palette, onFocus, publicView } = props;
 
   const hasKids = (node.children || []).length > 0;
   const collapsed = node.collapsed && hasKids;
   const isSelected = selectedId === node.id;
   const isDragOver = dragOverId === node.id;
   const isDragging = draggedId === node.id;
-  const dimmed = searchActive && !matches.has(node.id) && !hasMatchingDescendant(node, matches);
   const directReports = (node.children || []).length;
   const totalReports = countDescendants(node);
   const accent = palColor(palette, node.accent);
@@ -923,7 +786,7 @@ function Node(props) {
   const cardEl = (
     <div
       data-node-id={node.id}
-      className={["card", isBand ? "card-band-head" : "", isSelected ? "card-sel" : "", isDragOver ? (dragOverZone === "before" ? "card-over-before" : dragOverZone === "after" ? "card-over-after" : "card-over") : "", isDragging ? "card-dragging" : "", dimmed ? "card-dim" : "", node.id === "root" ? "card-root" : "", hasAccent ? "card-accent" : "", isLinkSource ? "card-link-src" : "", isLinkTarget ? "card-link-target" : ""].join(" ")}
+      className={["card", isBand ? "card-band-head" : "", isSelected ? "card-sel" : "", isDragOver ? (dragOverZone === "before" ? "card-over-before" : dragOverZone === "after" ? "card-over-after" : "card-over") : "", isDragging ? "card-dragging" : "", node.id === "root" ? "card-root" : "", hasAccent ? "card-accent" : "", isLinkSource ? "card-link-src" : "", isLinkTarget ? "card-link-target" : ""].join(" ")}
       style={hasAccent ? { "--card-accent": accent } : undefined}
       draggable={node.id !== "root"}
       onDragStart={(e) => onDragStart(e, node.id)}
@@ -988,7 +851,7 @@ function Node(props) {
     return (
       <div className={`branch ${depth === 0 ? "branch-root" : ""}`}>
         <div data-band-id={node.id}
-          className={`band ${node.stack ? "band-stack" : ""} ${hasAccent ? "band-accent" : ""} ${dimmed ? "card-dim" : ""}`}
+          className={`band ${node.stack ? "band-stack" : ""} ${hasAccent ? "band-accent" : ""}`}
           style={hasAccent ? { "--card-accent": accent } : undefined}>
           {cardEl}
           {hasKids && !collapsed && (
@@ -1022,12 +885,6 @@ function Node(props) {
       )}
     </div>
   );
-}
-
-function hasMatchingDescendant(node, matches) {
-  let yes = false;
-  (function recur(n) { if (matches.has(n.id)) yes = true; (n.children || []).forEach(recur); })(node);
-  return yes;
 }
 
 // point on a cubic bezier at parameter t (used to place link labels)
@@ -1341,7 +1198,7 @@ function LookupPanel({ tree, links, nameOf, initialId, onPick, onShow, onClose }
   const Row = ({ r, depth = 0, prefix = "" }) => (
     <button className="lp-row" style={{ paddingLeft: 10 + depth * 12 }} onClick={() => go(r.id)}>
       <span className="lp-row-name">{prefix}{r.name}</span>
-      <span className="lp-row-meta">{[r.title, r.count ? `${r.count} below` : null, r.meta].filter(Boolean).join(" · ")}</span>
+      <span className="lp-row-meta">{[r.title, r.count ? `manages ${r.count}` : null, r.meta].filter(Boolean).join(" · ")}</span>
     </button>
   );
   return (
@@ -1372,19 +1229,19 @@ function LookupPanel({ tree, links, nameOf, initialId, onPick, onShow, onClose }
             </button>
           </div>
           <section>
-            <div className="insp-label">Above · {above.length}</div>
+            <div className="insp-label">Reporting line · {above.length} up</div>
             {above.length === 0
               ? <div className="insp-empty">Top of the org.</div>
               : above.map((a, i) => <Row key={a.id} r={a} depth={i} />)}
           </section>
           <section>
-            <div className="insp-label">Below · {below.length} direct{total > below.length ? ` · ${total} in total` : ""}</div>
-            {below.length === 0 && <div className="insp-empty">No reports.</div>}
+            <div className="insp-label">Manages · {below.length} directly{total > below.length ? ` · ${total} in total` : ""}</div>
+            {below.length === 0 && <div className="insp-empty">Doesn't manage anyone.</div>}
             {(showAll ? everyone : below.map((c) => ({ id: c.id, name: c.name, title: c.title, depth: 0, count: countDescendants(c) })))
               .map((r) => <Row key={r.id} r={r} depth={r.depth} />)}
             {total > below.length && (
               <button className="tb insp-add insp-secondary" onClick={() => setShowAll((v) => !v)}>
-                {showAll ? "Show direct reports only" : `Show everyone below (${total})`}
+                {showAll ? "Just their direct reports" : `Show everyone they manage (${total})`}
               </button>
             )}
           </section>
@@ -1397,7 +1254,7 @@ function LookupPanel({ tree, links, nameOf, initialId, onPick, onShow, onClose }
         </div>
       )}
       {!node && !ql && (
-        <div className="insp-empty" style={{ padding: "12px 0" }}>Search for someone to see who's above them, who's below them, and every dotted line in or out.</div>
+        <div className="insp-empty" style={{ padding: "12px 0" }}>Search for someone to see their reporting line, who they manage, and every dotted line in or out.</div>
       )}
     </aside>
   );
