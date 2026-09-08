@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Plus, Trash2, ArrowRight, Copy } from "lucide-react";
+import { Plus, Trash2, ArrowRight, Copy, Archive, ArchiveRestore } from "lucide-react";
 import { supabase } from "../lib/supabase.js";
 import { sharedStyles } from "./styles.js";
 
@@ -12,9 +12,16 @@ const seedTree = () => ({
   children: [],
 });
 
+// The archived flag is stored inside the chart's JSON (tree.archived) — no DB column needed.
+// The list query reads it back as text via `archived:tree->>archived`.
+const isArchived = (c) => c.archived === true || c.archived === "true";
+
 export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [showArchive, setShowArchive] = useState(false);
+  const [dragId, setDragId] = useState(null);     // chart being dragged
+  const [overZone, setOverZone] = useState(null); // "archive" | "active" while hovering a drop zone
 
   const create = async (name, tree) => {
     const { data, error } = await supabase
@@ -53,6 +60,77 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
     if (error) { alert(error.message); return; }
     onDeleted();
   };
+
+  // Archive / restore: set or clear `archived` on the chart's JSON. Doesn't touch updated_at,
+  // so "edited … ago" stays truthful — filing a chart away isn't an edit.
+  const setArchived = async (chart, flag) => {
+    const { data, error } = await supabase.from("charts").select("tree").eq("id", chart.id).single();
+    if (error) { alert(error.message); return; }
+    const tree = { ...data.tree };
+    if (flag) tree.archived = true; else delete tree.archived;
+    const { error: e2 } = await supabase.from("charts").update({ tree }).eq("id", chart.id);
+    if (e2) { alert(e2.message); return; }
+    onCreated(); // reloads the list
+  };
+
+  const active = charts.filter((c) => !isArchived(c));
+  const archived = charts.filter(isArchived);
+  const dragged = dragId ? charts.find((c) => c.id === dragId) : null;
+
+  // drop-zone handlers: drop an active chart on the Archive to file it, an archived one on
+  // the main list to bring it back
+  const zoneProps = (zone) => ({
+    onDragOver: (e) => {
+      if (!dragged) return;
+      const valid = zone === "archive" ? !isArchived(dragged) : isArchived(dragged);
+      if (!valid) return;
+      e.preventDefault();
+      if (overZone !== zone) setOverZone(zone);
+    },
+    onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOverZone(null); },
+    onDrop: (e) => {
+      e.preventDefault();
+      if (dragged) setArchived(dragged, zone === "archive");
+      setDragId(null); setOverZone(null);
+    },
+  });
+
+  const row = (chart, inArchive) => (
+    <li key={chart.id}
+      className={`chart-row ${dragId === chart.id ? "dragging" : ""}`}
+      draggable
+      onDragStart={(e) => { setDragId(chart.id); if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", chart.id); } }}
+      onDragEnd={() => { setDragId(null); setOverZone(null); }}
+    >
+      <button className="chart-main" onClick={() => onOpen(chart.id)}>
+        <div className="chart-name">{chart.name}</div>
+        <div className="chart-meta">edited {formatDate(chart.updated_at)}</div>
+      </button>
+      <div className="chart-actions">
+        {inArchive ? (
+          <button className="ghost" title="Restore to the main list" onClick={() => setArchived(chart, false)}>
+            <ArchiveRestore size={14} strokeWidth={1.8} />
+          </button>
+        ) : (
+          <button className="ghost" title="Archive" onClick={() => setArchived(chart, true)}>
+            <Archive size={14} strokeWidth={1.8} />
+          </button>
+        )}
+        <button className="ghost" title="Duplicate" onClick={() => handleDuplicate(chart)}>
+          <Copy size={14} strokeWidth={1.8} />
+        </button>
+        <button className="ghost ghost-danger" title="Delete" onClick={() => handleDelete(chart)}>
+          <Trash2 size={14} strokeWidth={1.8} />
+        </button>
+        <button className="ghost" title="Open" onClick={() => onOpen(chart.id)}>
+          <ArrowRight size={14} strokeWidth={1.8} />
+        </button>
+      </div>
+    </li>
+  );
+
+  const restoreArmed = dragged && isArchived(dragged);
+  const archiveArmed = dragged && !isArchived(dragged);
 
   return (
     <div className="org-root">
@@ -102,27 +180,30 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
           </div>
         )}
 
-        <ul className="chart-list">
-          {charts.map((chart) => (
-            <li key={chart.id} className="chart-row">
-              <button className="chart-main" onClick={() => onOpen(chart.id)}>
-                <div className="chart-name">{chart.name}</div>
-                <div className="chart-meta">edited {formatDate(chart.updated_at)}</div>
-              </button>
-              <div className="chart-actions">
-                <button className="ghost" title="Duplicate" onClick={() => handleDuplicate(chart)}>
-                  <Copy size={14} strokeWidth={1.8} />
-                </button>
-                <button className="ghost ghost-danger" title="Delete" onClick={() => handleDelete(chart)}>
-                  <Trash2 size={14} strokeWidth={1.8} />
-                </button>
-                <button className="ghost" title="Open" onClick={() => onOpen(chart.id)}>
-                  <ArrowRight size={14} strokeWidth={1.8} />
-                </button>
-              </div>
-            </li>
-          ))}
+        <ul className={`chart-list zone ${restoreArmed ? "zone-armed" : ""} ${overZone === "active" ? "zone-over" : ""}`} {...zoneProps("active")}>
+          {active.map((c) => row(c, false))}
+          {active.length === 0 && archived.length > 0 && (
+            <li className="zone-empty">Everything's archived — drag a chart here to bring it back.</li>
+          )}
         </ul>
+
+        {(archived.length > 0 || archiveArmed) && (
+          <section className={`archive zone ${archiveArmed ? "zone-armed" : ""} ${overZone === "archive" ? "zone-over" : ""}`} {...zoneProps("archive")}>
+            <button className="archive-head" onClick={() => setShowArchive((v) => !v)}>
+              <Archive size={14} strokeWidth={1.8} />
+              <span>Archive · {archived.length}</span>
+              <span className="archive-hint">
+                {archiveArmed ? "drop here to archive" : showArchive ? "hide" : "show"}
+              </span>
+            </button>
+            {(showArchive || overZone === "archive") && archived.length > 0 && (
+              <ul className="chart-list archived-list">{archived.map((c) => row(c, true))}</ul>
+            )}
+            {showArchive && archived.length === 0 && (
+              <div className="zone-empty">Nothing archived yet — drag old versions here.</div>
+            )}
+          </section>
+        )}
       </div>
 
       <footer className="foot">
@@ -188,8 +269,10 @@ const listStyles = `
   margin-bottom: 8px;
   background: #fffdf6;
   transition: all 0.12s ease;
+  cursor: grab;
 }
 .chart-row:hover { border-color: var(--ink-faint); box-shadow: var(--shadow); }
+.chart-row.dragging { opacity: 0.4; }
 .chart-main {
   flex: 1; text-align: left;
   background: transparent; border: none;
@@ -211,4 +294,31 @@ const listStyles = `
   opacity: 0; transition: opacity 0.15s ease;
 }
 .chart-row:hover .chart-actions { opacity: 1; }
+
+/* drop zones: the main list (restore) and the Archive (file away) */
+.zone { border-radius: 4px; transition: box-shadow 0.15s ease, background 0.15s ease, border-color 0.15s ease; }
+.chart-list.zone-armed { box-shadow: 0 0 0 2px var(--rule-soft); }
+.chart-list.zone-over { box-shadow: 0 0 0 2px var(--accent); background: rgba(184, 68, 42, 0.04); }
+.zone-empty {
+  padding: 18px; text-align: center; list-style: none;
+  font-family: 'Iowan Old Style', Georgia, serif; font-size: 13px; font-style: italic;
+  color: var(--ink-faint);
+}
+.archive {
+  margin-top: 28px; padding: 8px 12px 10px;
+  border: 1px dashed var(--rule);
+}
+.archive.zone-armed { border-color: var(--ink-faint); border-style: dashed; }
+.archive.zone-over { border-color: var(--accent); background: rgba(184, 68, 42, 0.05); }
+.archive-head {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  background: transparent; border: none; cursor: pointer; padding: 6px 0;
+  font-family: 'Iowan Old Style', Georgia, serif; font-size: 14.5px; font-weight: 600;
+  color: var(--ink-soft);
+}
+.archive-head:hover { color: var(--ink); }
+.archive-hint { margin-left: auto; font-size: 11.5px; font-style: italic; font-weight: 400; color: var(--ink-faint); }
+.archived-list { margin-top: 10px; }
+.archived-list .chart-row { background: rgba(255, 253, 246, 0.55); }
+.archived-list .chart-name { color: var(--ink-soft); }
 `;

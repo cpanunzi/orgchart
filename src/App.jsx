@@ -25,7 +25,7 @@ export default function App() {
     try {
       const { data, error: err } = await supabase
         .from("charts")
-        .select("id, name, updated_at, created_at")
+        .select("id, name, updated_at, created_at, archived:tree->>archived") // archived flag lives in the chart JSON
         .order("updated_at", { ascending: false });
       if (err) throw err;
       setCharts(data || []);
