@@ -269,6 +269,9 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     window.history.replaceState(null, "", url.toString());
     setPublicView(next);
   }, [publicView]);
+  // Look-up sidebar: search a person, see everyone above/below them and every dotted line.
+  const [lookupOpen, setLookupOpen] = useState(false);
+  const [lookupId, setLookupId] = useState(null);
   const canvasRef = useRef(null);   // the .canvas viewport
   const treeRef = useRef(null);     // the natural-size tree layer (for Fit)
   const panRef = useRef(null);      // in-flight pan drag state
@@ -432,6 +435,16 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
+  // ⌘K / Ctrl+K opens the look-up sidebar
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setLookupOpen(true); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // while the sidebar is open, clicking a card on the canvas loads that person into it
+  useEffect(() => { if (lookupOpen && selectedId) setLookupId(selectedId); }, [lookupOpen, selectedId]);
 
   const handleDragStart = (e, id) => {
     if (id === "root") { e.preventDefault(); return; }
@@ -554,6 +567,14 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     setFocusId(id); setSelectedId(null); setLinkingFrom(null);
   }, []);
   const exitFocus = useCallback(() => setFocusId(null), []);
+  // "Show on chart": drill into the person's team and select them
+  const showOnChart = useCallback((id) => {
+    if (!tree) return;
+    const p = pathTo(tree, id);
+    const parent = p.length > 1 ? p[p.length - 2] : null;
+    if (parent && parent.id !== "root") enterFocus(parent.id); else setFocusId(null);
+    setSelectedId(id);
+  }, [tree, enterFocus]);
   // re-fit whenever the focused subtree changes (an explicit navigation, so always fit)
   useEffect(() => {
     if (!tree) return;
@@ -714,6 +735,10 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
         </div>
 
         <div className="toolbar">
+          <button className={`tb ${lookupOpen ? "tb-on" : ""}`} onClick={() => setLookupOpen((v) => !v)} title="Look up a person — who's above and below them, and every dotted line (⌘K)">
+            <Search size={14} strokeWidth={1.5} /> Look up
+          </button>
+          <div className="tb-sep" />
           <button className="tb" onClick={undo} disabled={!history.length}><RotateCcw size={14} strokeWidth={1.5} /> Undo</button>
           <button className="tb" onClick={() => apply(expandAll)}>Expand all</button>
           <button className="tb" onClick={() => apply(collapseAllExceptRoot)}>Collapse all</button>
@@ -747,6 +772,15 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
         <span className="hint">drag onto a card to reassign · drop on its left/right edge to reorder · click a field to edit · ⌘/Ctrl-click to add a report</span>
       </div>
 
+      <div className="workspace">
+      {lookupOpen && (
+        <LookupPanel
+          tree={tree} links={links} nameOf={nameOf} initialId={lookupId}
+          onPick={(id) => { setLookupId(id); const el = document.querySelector(`[data-node-id="${cssId(id)}"]`); if (el) setSelectedId(id); }}
+          onShow={showOnChart}
+          onClose={() => setLookupOpen(false)}
+        />
+      )}
       <main
         className={`canvas ${panning ? "is-panning" : ""}`}
         ref={canvasRef}
@@ -805,6 +839,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           <button className="zc zc-fit" onClick={fitView} title="Fit to screen"><Maximize2 size={13} strokeWidth={1.8} /></button>
         </div>
       </main>
+      </div>
 
       {linkingFrom && (
         <div className="link-banner">
@@ -1272,6 +1307,102 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
   );
 }
 
+// ---------- look-up sidebar ----------
+// Search a person and see their management chain, their reports, and every dotted line.
+function LookupPanel({ tree, links, nameOf, initialId, onPick, onShow, onClose }) {
+  const [q, setQ] = useState("");
+  const [id, setId] = useState(initialId || null);
+  const [showAll, setShowAll] = useState(false);
+  useEffect(() => { if (initialId) { setId(initialId); setShowAll(false); } }, [initialId]);
+  const people = useMemo(() => (tree ? flatten(tree) : []), [tree]);
+  const ql = q.trim().toLowerCase();
+  const results = ql
+    ? people.filter((p) =>
+        (p.name || "").toLowerCase().includes(ql) ||
+        (p.title || "").toLowerCase().includes(ql) ||
+        (p.team || "").toLowerCase().includes(ql)).slice(0, 10)
+    : [];
+  const node = id && tree ? findNode(tree, id) : null;
+  const path = node ? pathTo(tree, id) : [];
+  const above = path.slice(0, -1);
+  const teamOf = (pid) => { const p = pathTo(tree, pid); return p.length > 1 ? p[1].name : ""; };
+  const outgoing = node ? links.filter((l) => l.from === id) : [];
+  const incoming = node ? links.filter((l) => l.to === id) : [];
+  const below = node ? (node.children || []) : [];
+  const total = node ? countDescendants(node) : 0;
+  const everyone = useMemo(() => {
+    if (!node || !showAll) return [];
+    const out = [];
+    const rec = (n, d) => { (n.children || []).forEach((c) => { out.push({ id: c.id, name: c.name, title: c.title, depth: d, count: countDescendants(c) }); rec(c, d + 1); }); };
+    rec(node, 0);
+    return out;
+  }, [node, showAll]);
+  const go = (pid) => { setId(pid); setShowAll(false); setQ(""); onPick && onPick(pid); };
+  const Row = ({ r, depth = 0, prefix = "" }) => (
+    <button className="lp-row" style={{ paddingLeft: 10 + depth * 12 }} onClick={() => go(r.id)}>
+      <span className="lp-row-name">{prefix}{r.name}</span>
+      <span className="lp-row-meta">{[r.title, r.count ? `${r.count} below` : null, r.meta].filter(Boolean).join(" · ")}</span>
+    </button>
+  );
+  return (
+    <aside className="lookup">
+      <div className="lookup-head"><span>Look up a person</span><button className="x" onClick={onClose} title="Close">×</button></div>
+      <input className="link-search-input" autoFocus placeholder="Type a name, title or team…" value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && results[0]) { e.preventDefault(); go(results[0].id); } if (e.key === "Escape") setQ(""); }} />
+      {ql && (
+        <div className="link-results">
+          {results.length === 0 && <div className="link-result-empty">No one matches "{q}"</div>}
+          {results.map((p) => (
+            <button key={p.id} className="link-result" onClick={() => go(p.id)}>
+              <span className="lr-name">{p.name}</span>
+              <span className="lr-meta">{[p.title, p.manager && `↳ ${p.manager}`].filter(Boolean).join(" · ")}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {node && !ql && (
+        <div className="lookup-body">
+          <div className="lookup-person">
+            <div className="lp-name">{node.name}</div>
+            {node.title && <div className="lp-title">{node.title}</div>}
+            {node.team && <div className="lp-team">{node.team}</div>}
+            <button className="tb tb-primary insp-add" onClick={() => onShow(id)}>
+              <Maximize2 size={13} strokeWidth={1.8} /> Show on chart
+            </button>
+          </div>
+          <section>
+            <div className="insp-label">Above · {above.length}</div>
+            {above.length === 0
+              ? <div className="insp-empty">Top of the org.</div>
+              : above.map((a, i) => <Row key={a.id} r={a} depth={i} />)}
+          </section>
+          <section>
+            <div className="insp-label">Below · {below.length} direct{total > below.length ? ` · ${total} in total` : ""}</div>
+            {below.length === 0 && <div className="insp-empty">No reports.</div>}
+            {(showAll ? everyone : below.map((c) => ({ id: c.id, name: c.name, title: c.title, depth: 0, count: countDescendants(c) })))
+              .map((r) => <Row key={r.id} r={r} depth={r.depth} />)}
+            {total > below.length && (
+              <button className="tb insp-add insp-secondary" onClick={() => setShowAll((v) => !v)}>
+                {showAll ? "Show direct reports only" : `Show everyone below (${total})`}
+              </button>
+            )}
+          </section>
+          <section>
+            <div className="insp-label">Dotted lines · {outgoing.length + incoming.length}</div>
+            {outgoing.length + incoming.length === 0 && <div className="insp-empty">None.</div>}
+            {outgoing.map((l) => <Row key={"o" + l.to} r={{ id: l.to, name: nameOf(l.to), meta: [teamOf(l.to), l.label].filter(Boolean).join(" · ") }} prefix="→ " />)}
+            {incoming.map((l) => <Row key={"i" + l.from} r={{ id: l.from, name: nameOf(l.from), meta: [teamOf(l.from), l.label].filter(Boolean).join(" · ") }} prefix="← " />)}
+          </section>
+        </div>
+      )}
+      {!node && !ql && (
+        <div className="insp-empty" style={{ padding: "12px 0" }}>Search for someone to see who's above them, who's below them, and every dotted line in or out.</div>
+      )}
+    </aside>
+  );
+}
+
 // Search everyone in the chart by name/title/team and pick one to link to.
 // Works regardless of what's on screen — the whole point when drilled into a team.
 function LinkSearch({ people, excludeIds, onPick }) {
@@ -1626,6 +1757,30 @@ const chartStyles = `
   margin-left: 10px; padding-left: 10px; border-left: 1px solid var(--rule);
   font-size: 11px; font-style: italic; color: var(--ink-faint);
 }
+
+/* ---------- look-up sidebar ---------- */
+.workspace { display: flex; gap: 14px; align-items: stretch; }
+.workspace > .canvas { flex: 1; min-width: 0; }
+.lookup {
+  width: 300px; flex: none; height: calc(100vh - 208px); min-height: 460px;
+  overflow: auto; box-sizing: border-box; padding: 12px 14px;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 6px;
+  font-family: 'Iowan Old Style', Georgia, serif;
+}
+.lookup-head { display: flex; justify-content: space-between; align-items: center;
+  font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.lookup-person { margin-top: 12px; }
+.lp-name { font-size: 18px; font-weight: 600; letter-spacing: -0.005em; }
+.lp-title { font-size: 12.5px; font-style: italic; color: var(--ink-soft); margin-top: 2px; }
+.lp-team { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--accent);
+  font-weight: 700; font-family: 'Helvetica Neue', Arial, sans-serif; margin-top: 4px; }
+.lookup-body section { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--rule-soft); }
+.lp-row { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%;
+  text-align: left; background: transparent; border: none; border-radius: 5px;
+  padding: 5px 10px; cursor: pointer; font-family: inherit; }
+.lp-row:hover { background: var(--paper-2); }
+.lp-row-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+.lp-row-meta { font-size: 10.5px; font-style: italic; color: var(--ink-faint); }
 
 /* ---------- matrix: band (grouping container) ---------- */
 .band {
