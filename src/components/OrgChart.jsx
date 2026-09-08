@@ -510,16 +510,21 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     if (cv) zoomAt(factor, cv.clientWidth / 2, cv.clientHeight / 2);
   }, [zoomAt]);
 
-  // scale + center the whole tree to fit the viewport
-  const fitView = useCallback(() => {
+  // Scale + centre the tree to fit the viewport. Automatic fits (load, drill-down) never go
+  // below READABLE_ZOOM — a wide team is left overflowing (scroll/drag to move) rather than
+  // shrunk to unreadable text. The explicit Fit button passes readable=false to see everything.
+  const READABLE_ZOOM = 0.75;
+  const fitView = useCallback((readable = true) => {
     const cv = canvasRef.current, tr = treeRef.current;
     if (!cv || !tr) return false;
     const cw = cv.clientWidth, ch = cv.clientHeight;
     const tw = tr.offsetWidth, th = tr.offsetHeight;
     if (!tw || !th) return false;
-    const z = clampZoom(Math.min(cw / tw, ch / th) * 0.92);
+    let z = clampZoom(Math.min(cw / tw, ch / th) * 0.92);
+    if (readable === true && z < READABLE_ZOOM) z = READABLE_ZOOM;
+    const w = tw * z, h = th * z;
     setZoom(z);
-    setPan({ x: (cw - tw * z) / 2, y: Math.max(20, (ch - th * z) / 2) });
+    setPan({ x: w > cw ? 24 : (cw - w) / 2, y: h > ch ? 20 : Math.max(20, (ch - h) / 2) });
     return true;
   }, []);
 
@@ -537,18 +542,26 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     return () => { cancelled = true; clearTimeout(timer); };
   }, [tree, fitView]);
 
-  // wheel to zoom toward the cursor (native, non-passive so we can preventDefault)
+  const canvasReady = !!tree;
+  // wheel: scroll pans, ⌘/Ctrl-scroll zooms toward the cursor (native, non-passive so we can preventDefault)
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
     const onWheel = (e) => {
       e.preventDefault();
-      const cr = cv.getBoundingClientRect();
-      zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - cr.left, e.clientY - cr.top);
+      if (e.ctrlKey || e.metaKey) { // ⌘/Ctrl-scroll or trackpad pinch → zoom toward the cursor
+        const cr = cv.getBoundingClientRect();
+        zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - cr.left, e.clientY - cr.top);
+      } else { // plain scroll → move around (wide teams overflow at a readable size)
+        userMovedRef.current = true;
+        setPan((p) => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
+      }
     };
     cv.addEventListener("wheel", onWheel, { passive: false });
     return () => cv.removeEventListener("wheel", onWheel);
-  }, [zoomAt]);
+    // canvasReady: the canvas isn't in the DOM until the tree has loaded, so this must re-run
+    // once it exists — with [zoomAt] alone it ran once against a null ref and never attached.
+  }, [zoomAt, canvasReady]);
 
   // drag empty canvas to pan; a click on empty space clears selection
   const onCanvasMouseDown = (e) => {
@@ -653,7 +666,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
         <span className="dot">·</span>
         <span><strong>{stats.teams}</strong> teams</span>
         <span className="dot">·</span>
-        <span className="hint">drag onto a card to reassign · drop on its left/right edge to reorder · click a field to edit · ⌘/Ctrl-click to add a report</span>
+        <span className="hint">scroll to move · ⌘/Ctrl-scroll to zoom · drag onto a card to reassign · drop on its left/right edge to reorder · click a field to edit</span>
       </div>
 
       <div className="workspace">
@@ -717,9 +730,9 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 
         <div className="zoom-controls">
           <button className="zc" onClick={() => zoomButton(1 / 1.2)} title="Zoom out">−</button>
-          <button className="zc zc-pct" onClick={fitView} title="Fit to screen">{Math.round(zoom * 100)}%</button>
+          <button className="zc zc-pct" onClick={() => fitView(false)} title="Fit everything on screen (may shrink the text)">{Math.round(zoom * 100)}%</button>
           <button className="zc" onClick={() => zoomButton(1.2)} title="Zoom in">+</button>
-          <button className="zc zc-fit" onClick={fitView} title="Fit to screen"><Maximize2 size={13} strokeWidth={1.8} /></button>
+          <button className="zc zc-fit" onClick={() => fitView(false)} title="Fit everything on screen (may shrink the text)"><Maximize2 size={13} strokeWidth={1.8} /></button>
         </div>
       </main>
       </div>
@@ -1404,7 +1417,7 @@ const chartStyles = `
 .branch { display: flex; flex-direction: column; align-items: center; }
 
 .card {
-  position: relative; width: 176px;
+  position: relative; width: 196px;
   background: #fffdf7;
   border: 1px solid var(--rule);
   border-radius: 8px;
@@ -1459,9 +1472,9 @@ const chartStyles = `
   transition: background 0.1s ease; word-break: break-word; }
 .field:hover { background: var(--paper-2); }
 .field-empty { color: var(--ink-faint); font-style: italic; }
-.name { flex: 1; font-size: 13.5px; font-weight: 600; letter-spacing: -0.005em; line-height: 1.2;
+.name { flex: 1; font-size: 15.5px; font-weight: 600; letter-spacing: -0.005em; line-height: 1.2;
   font-family: 'Iowan Old Style', Georgia, serif; }
-.title { font-size: 11px; color: var(--ink-soft); margin-bottom: 5px; margin-left: 19px;
+.title { font-size: 12.5px; color: var(--ink-soft); margin-bottom: 5px; margin-left: 19px;
   font-style: italic; line-height: 1.3; }
 .card-foot {
   display: flex; align-items: center; justify-content: space-between;
@@ -1469,7 +1482,7 @@ const chartStyles = `
   border-top: 1px dotted var(--rule);
   gap: 8px;
 }
-.team { font-size: 9.5px; letter-spacing: 0.07em; text-transform: uppercase;
+.team { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase;
   color: var(--accent); font-weight: 700; font-family: 'Helvetica Neue', 'Arial', sans-serif; }
 .team.field-empty { color: var(--ink-faint); }
 .report-count {
@@ -1483,8 +1496,8 @@ const chartStyles = `
   background: #fffdf6; padding: 1px 4px; margin: 0 -5px;
   border-radius: 1px; width: 100%; box-sizing: border-box;
 }
-.field-input.name { font-size: 14.5px; font-weight: 600; }
-.field-input.title { font-size: 12px; font-style: italic; color: var(--ink-soft); }
+.field-input.name { font-size: 15.5px; font-weight: 600; }
+.field-input.title { font-size: 12.5px; font-style: italic; color: var(--ink-soft); }
 .field-input.team { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--accent); font-weight: 600; }
 
@@ -1665,7 +1678,7 @@ const chartStyles = `
 }
 .card-band-head:hover { transform: none; box-shadow: none; }
 .card-band-head .card-rail { border-radius: 3px; }
-.card-band-head .name { font-size: 15px; }
+.card-band-head .name { font-size: 17px; }
 
 /* ---------- matrix: link-drawing banner ---------- */
 .link-banner {
