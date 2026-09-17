@@ -6,3 +6,8 @@ dist
 .env.*.local
 .DS_Store
 .vercel
+.env.*
+!.env.example
+!.env.local.example
+.next
+.pgdata
