@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { ArrowLeft, Plus, X, Search, RotateCcw, Crown, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2, Edit2, UserPlus } from "lucide-react";
+import { ArrowLeft, Plus, X, Search, RotateCcw, Crown, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2, Edit2, UserPlus, Minus, Maximize2 } from "lucide-react";
 import { supabase } from "../lib/supabase.js";
 import { sharedStyles } from "./styles.js";
 
@@ -119,6 +119,9 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   const [editing, setEditing] = useState(null);   // id of the team/subteam being renamed
   const [drag, setDrag] = useState(null);         // { key, chipId }
   const [overKey, setOverKey] = useState(null);
+  const [zoom, setZoomState] = useState(() => { try { const z = parseFloat(localStorage.getItem(`atelier-matrix-zoom:${chartId}`)); return z >= 0.3 && z <= 1.5 ? z : 1; } catch { return 1; } });
+  const scrollRef = useRef(null);
+  const gridRef = useRef(null);
   const docRef = useRef(null);
   const saveTimer = useRef(null);
   const lastSavedAt = useRef(0);
@@ -201,11 +204,25 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
       if (e.key === "Escape") { setPicker(null); setChipMenu(null); }
       const t = e.target; const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA");
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !typing) { e.preventDefault(); undo(); }
+      if ((e.metaKey || e.ctrlKey) && !typing && (e.key === "=" || e.key === "+")) { e.preventDefault(); setZoom((z) => z + 0.1); }
+      if ((e.metaKey || e.ctrlKey) && !typing && e.key === "-") { e.preventDefault(); setZoom((z) => z - 0.1); }
+      if ((e.metaKey || e.ctrlKey) && !typing && e.key === "0") { e.preventDefault(); setZoom(1); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ---- zoom (view only — never saved to the board) -------------------------------------------
+  const setZoom = useCallback((z) => setZoomState((cur) => { const next = Math.min(1.5, Math.max(0.3, Math.round((typeof z === "function" ? z(cur) : z) * 100) / 100)); try { localStorage.setItem(`atelier-matrix-zoom:${chartId}`, String(next)); } catch { /* ignore */ } return next; }), [chartId]);
+  const fitZoom = () => { const sc = scrollRef.current, g = gridRef.current; if (!sc || !g) return; const r = g.getBoundingClientRect(); const natural = r.width / zoom, naturalH = r.height / zoom; if (!natural) return; setZoom(Math.min(1, (sc.clientWidth - 2) / natural, Math.max(0.3, (sc.clientHeight - 2) / naturalH))); sc.scrollTo({ left: 0, top: 0 }); };
+  const boardReady = !!doc && !tooNew;
+  useEffect(() => {
+    const sc = scrollRef.current; if (!sc) return;
+    const onWheel = (e) => { if (!(e.ctrlKey || e.metaKey)) return; e.preventDefault(); setZoom((z) => z * Math.exp(-e.deltaY * 0.01)); }; // pinch or ⌘-scroll
+    sc.addEventListener("wheel", onWheel, { passive: false });
+    return () => sc.removeEventListener("wheel", onWheel);
+  }, [boardReady, setZoom]);
 
   // ---- helpers ------------------------------------------------------------------------------
   const person = (ref) => (ref ? source.byId.get(ref) : null) || null;
@@ -336,6 +353,12 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
         </button>
         <div className="mx-spacer" />
         <div className="mx-stats"><span><strong>{topLanes.length}</strong> across</span><span><strong>{leftLanes.length}</strong> down</span><span><strong>{stats.people}</strong> people</span></div>
+        <div className="mx-zoom" title="Zoom — also pinch, ⌘-scroll, or ⌘+ / ⌘−">
+          <button onClick={() => setZoom((z) => z - 0.1)} disabled={zoom <= 0.3} aria-label="Zoom out"><Minus size={14} strokeWidth={1.9} /></button>
+          <button className="mx-zoom-pct" onClick={() => setZoom(1)} title="Back to 100%">{Math.round(zoom * 100)}%</button>
+          <button onClick={() => setZoom((z) => z + 0.1)} disabled={zoom >= 1.5} aria-label="Zoom in"><Plus size={14} strokeWidth={1.9} /></button>
+          <button className="mx-zoom-fit" onClick={fitZoom} title="Fit the whole board on screen"><Maximize2 size={13} strokeWidth={1.8} /> Fit</button>
+        </div>
         <button className="tb" onClick={undo} disabled={!history.length} title="Undo (⌘Z)"><RotateCcw size={14} strokeWidth={1.5} /> Undo</button>
         <div className={`mx-save mx-save-${saveStatus}`}>{saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save error" : "Saved"}</div>
       </header>
@@ -351,8 +374,8 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
         Set up <strong>teams and subteams</strong> across the top and down the side however you like, then put people where they meet. People come from <strong>{source.name || "your functional org"}</strong>; their reporting line stays there.
       </div>
 
-      <div className="mx-scroll">
-        <div className="mx-grid" style={{ gridTemplateColumns: tracks.join(" ") }}>
+      <div className="mx-scroll" ref={scrollRef}>
+        <div className="mx-grid" ref={gridRef} style={{ gridTemplateColumns: tracks.join(" "), zoom }}>
           <div className="mx-corner" style={{ gridColumn: "1 / 3", gridRow: "1 / 3" }}>
             <span className="mx-axis mx-axis-col">team → subteam →</span>
             <span className="mx-axis mx-axis-row">team ↓ · subteam ↓</span>
@@ -625,6 +648,10 @@ const mxStyles = `
 .mx-chip-new { border-style: dashed; }
 .mx-avatar-new { background: color-mix(in srgb, var(--c) 14%, #fffdf8) !important; color: var(--c) !important; border: 1px dashed var(--c); }
 .pk .pk-row.pk-new { position: sticky; bottom: 0; background: #f6f1e4; margin-top: 0; z-index: 1; border-top: 1px solid var(--rule); box-shadow: 0 -6px 10px -6px rgba(40,30,10,.12); } .pk .pk-row.pk-new:hover { background: #efe8d6; } .pk-new strong { color: var(--ink); }
+.mx-zoom { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 9px; background: #fffdf7; overflow: hidden; height: 32px; }
+.mx-zoom button { height: 100%; min-width: 30px; border: none; background: transparent; color: var(--ink-soft); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 12px; }
+.mx-zoom button:hover:not(:disabled) { background: var(--paper-2); color: var(--ink); } .mx-zoom button:disabled { opacity: .35; cursor: default; }
+.mx-zoom-pct { min-width: 46px !important; font-variant-numeric: tabular-nums; font-weight: 600; } .mx-zoom-fit { padding: 0 10px; border-left: 1px solid var(--line) !important; }
 .mx-rescue { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding: 12px 14px; border: 1px solid #b8442a; border-radius: 10px; background: #fbeee9; font-family: 'Iowan Old Style', Georgia, serif; font-size: 13.5px; line-height: 1.5; }
 .mx-rescue > div { flex: 1; min-width: 280px; }
 .mx-pod { background: #fffdf7; padding: 14px 14px 12px; box-shadow: inset 0 3px 0 var(--ink); }
