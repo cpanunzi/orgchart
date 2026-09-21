@@ -226,7 +226,7 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
     t.subs.push({ id, label: "", headRef: null }); return d; }); setEditing(id); };
   const find = (d, axis, teamId, subId) => { const t = d[axis].find((x) => x.id === teamId); return subId ? (t && t.subs.find((x) => x.id === subId)) : t; };
   const renameNode = (axis, teamId, subId, v) => apply((d) => { const n = find(d, axis, teamId, subId); if (n) n.label = v.trim(); return d; });
-  const setHead = (axis, teamId, subId, ref) => apply((d) => { const n = find(d, axis, teamId, subId); if (n) n.headRef = ref || null; return d; });
+  const setHead = (axis, teamId, subId, pick) => apply((d) => { const n = find(d, axis, teamId, subId); if (n) { n.headRef = pick.ref || null; if (!pick.ref && pick.name) n.headName = pick.name; else delete n.headName; } return d; });
   const moveTeam = (axis, teamId, delta) => apply((d) => { const a = d[axis]; const i = a.findIndex((x) => x.id === teamId), j = i + delta; if (i < 0 || j < 0 || j >= a.length) return d; const [x] = a.splice(i, 1); a.splice(j, 0, x); return d; });
   const moveSub = (axis, teamId, subId, delta) => apply((d) => { const t = d[axis].find((x) => x.id === teamId); if (!t) return d; const a = t.subs; const i = a.findIndex((x) => x.id === subId), j = i + delta; if (i < 0 || j < 0 || j >= a.length) return d; const [x] = a.splice(i, 1); a.splice(j, 0, x); return d; });
   const removeTeam = (axis, t) => { const ids = lanesOf([t]).map((l) => l.id); const n = peopleIn((k) => ids.includes(side(k, axis)));
@@ -236,13 +236,14 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
     apply((d) => { const tt = d[axis].find((x) => x.id === t.id); if (tt) tt.subs = tt.subs.filter((x) => x.id !== sub.id); dropCells(d, (k) => side(k, axis) === sub.id); return d; }); };
   const addTo = (key, pick) => apply((d) => { const arr = d.cells[key] || (d.cells[key] = []); if (pick.ref && arr.some((c) => c.ref === pick.ref)) return d; arr.push({ id: rid(), ref: pick.ref || null, name: pick.name || "", role: "" }); return d; });
   const removeChip = (key, chipId) => apply((d) => { d.cells[key] = (d.cells[key] || []).filter((c) => c.id !== chipId); if (!d.cells[key].length) delete d.cells[key]; return d; });
+  const setChipName = (key, chipId, nm) => apply((d) => { const c = (d.cells[key] || []).find((x) => x.id === chipId); if (c && !c.ref) c.name = nm; return d; });
   const setRole = (key, chipId, role) => apply((d) => { const c = (d.cells[key] || []).find((x) => x.id === chipId); if (c) c.role = role; return d; });
   const moveChip = (fromKey, chipId, toKey) => { if (fromKey === toKey) return; apply((d) => { const from = d.cells[fromKey] || []; const chip = from.find((c) => c.id === chipId); if (!chip) return d; const to = d.cells[toKey] || (d.cells[toKey] = []); if (chip.ref && to.some((c) => c.ref === chip.ref)) return d; d.cells[fromKey] = from.filter((c) => c.id !== chipId); if (!d.cells[fromKey].length) delete d.cells[fromKey]; to.push(chip); return d; }); };
 
   const onPick = (pick) => {
     const p = picker; if (!p) return;
     if (p.mode === "cell") { addTo(ck(p.leftId, p.topId), pick); return; }      // stays open — add several
-    if (p.mode === "head") setHead(p.axis, p.teamId, p.subId, pick.ref);
+    if (p.mode === "head") setHead(p.axis, p.teamId, p.subId, pick);
     if (p.mode === "teamLead") apply((d) => { d.leadRef = pick.ref || null; return d; });
     setPicker(null);
   };
@@ -269,7 +270,8 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   const lastRow = row;
 
   const headCell = ({ axis, t, sub, color, idx, count }) => {
-    const node = sub || t; const hp = person(node.headRef); const isTop = axis === "top";
+    const node = sub || t; const isTop = axis === "top";
+    const hp = person(node.headRef) || (node.headName ? { name: node.headName, title: "not in the org chart", outside: true } : null);
     return (<>
       <div className="mx-fn-row">
         <InlineEdit className={sub ? "mx-sub-name" : "mx-team-name"} value={node.label} placeholder={sub ? "Name this subteam" : "Name this team"} autoEdit={editing === node.id} onDone={() => setEditing(null)} onCommit={(v) => renameNode(axis, t.id, sub?.id, v)} />
@@ -277,7 +279,7 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
           onPrev={() => (sub ? moveSub(axis, t.id, sub.id, -1) : moveTeam(axis, t.id, -1))} onNext={() => (sub ? moveSub(axis, t.id, sub.id, 1) : moveTeam(axis, t.id, 1))} onRemove={() => (sub ? removeSub(axis, t, sub) : removeTeam(axis, t))} />
       </div>
       <button className={`mx-person ${hp ? "" : "mx-person-empty"}`} onClick={(e) => openPicker(e, { mode: "head", axis, teamId: t.id, subId: sub?.id })} title={hp ? "Change or clear this person" : "Put a person on this (optional)"}>
-        {hp ? (<><span className={`mx-avatar ${sub ? "" : "mx-avatar-lg"}`} style={{ background: color }}>{initials(hp.name)}</span><span className="mx-head-text"><strong>{hp.name}</strong><em>{hp.title || ""}</em></span></>) : (<><UserPlus size={13} strokeWidth={1.7} /><span>person</span></>)}
+        {hp ? (<><span className={`mx-avatar ${sub ? "" : "mx-avatar-lg"} ${hp.outside ? "mx-avatar-new" : ""}`} style={{ "--c": color, background: hp.outside ? undefined : color }}>{initials(hp.name)}</span><span className="mx-head-text"><strong>{hp.name}</strong><em>{hp.title || ""}</em></span></>) : (<><UserPlus size={13} strokeWidth={1.7} /><span>person</span></>)}
       </button>
       {!sub && <button className="mx-plus mx-plus-sub" onClick={() => addSub(axis, t.id)} title={t.subs.length ? "Add another subteam" : "Split this team into subteams"}><Plus size={13} strokeWidth={1.8} /> subteam</button>}
     </>);
@@ -286,13 +288,13 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   const renderChip = (k, color, c) => {
     const p = person(c.ref); const missing = c.ref && source.ready && !p;
     return (
-      <button key={c.id} className={`mx-chip ${!c.ref ? "mx-chip-open" : ""} ${missing ? "mx-chip-missing" : ""} ${drag?.chipId === c.id ? "mx-chip-drag" : ""}`} style={{ "--c": color }}
+      <button key={c.id} className={`mx-chip ${!c.ref ? (c.name ? "mx-chip-new" : "mx-chip-open") : ""} ${missing ? "mx-chip-missing" : ""} ${drag?.chipId === c.id ? "mx-chip-drag" : ""}`} style={{ "--c": color }}
         draggable onDragStart={(e) => { setDrag({ key: k, chipId: c.id }); if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); } }}
         onDragEnd={() => { setDrag(null); setOverKey(null); }}
         onClick={(e) => { const rc = e.currentTarget.getBoundingClientRect(); setPicker(null); setChipMenu({ key: k, chipId: c.id, rect: { left: rc.left, top: rc.top, bottom: rc.bottom } }); }}
-        title={p ? `${p.title || "—"} · reports to ${p.managerName || "—"}` : missing ? `No longer in ${source.name}` : "Open role / not in the org"}>
-        <span className="mx-avatar" style={c.ref ? { background: color } : undefined}>{c.ref ? initials(p?.name || c.name) : "?"}</span>
-        <span className="mx-chip-text"><strong>{p?.name || c.name || "Open role"}</strong><em>{c.role || p?.title || (c.ref ? "" : "open role")}</em></span>
+        title={p ? `${p.title || "—"} · reports to ${p.managerName || "—"}` : missing ? `No longer in ${source.name}` : c.name ? "Not in the org chart — click to edit" : "Open role"}>
+        <span className={`mx-avatar ${!c.ref && c.name ? "mx-avatar-new" : ""}`} style={c.ref ? { background: color } : undefined}>{c.ref || c.name ? initials(p?.name || c.name) : "?"}</span>
+        <span className="mx-chip-text"><strong>{p?.name || c.name || "Open role"}</strong><em>{c.role || p?.title || (c.ref ? "" : c.name ? "not in org chart" : "open role")}</em></span>
       </button>
     );
   };
@@ -308,9 +310,9 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
       const L = lanesOf(LEFT).find((x) => x.id === picker.leftId), T = lanesOf(TOP).find((x) => x.id === picker.topId);
       const refs = [L?.sub?.headRef, L?.team.headRef, T?.sub?.headRef, T?.team.headRef].filter(Boolean);
       const anchors = [...new Set(refs)].map((id) => ({ id, label: `${displayName(id)}'s org` }));
-      return { title: `${L ? laneName(L) : ""} × ${T ? laneName(T) : ""}`, anchors, byTeam: true, taken: new Set((doc.cells[ck(picker.leftId, picker.topId)] || []).map((c) => c.ref).filter(Boolean)), multi: true, allowPlaceholder: true };
+      return { title: `${L ? laneName(L) : ""} × ${T ? laneName(T) : ""}`, anchors, byTeam: true, taken: new Set((doc.cells[ck(picker.leftId, picker.topId)] || []).map((c) => c.ref).filter(Boolean)), multi: true, allowNew: true };
     }
-    if (picker.mode === "head") { const n = find(doc, picker.axis, picker.teamId, picker.subId); return { title: `Who's on “${n?.label || (picker.subId ? "this subteam" : "this team")}”?`, hint: "Optional — pick the person who leads or represents it.", clearable: !!n?.headRef }; }
+    if (picker.mode === "head") { const n = find(doc, picker.axis, picker.teamId, picker.subId); return { title: `Who's on “${n?.label || (picker.subId ? "this subteam" : "this team")}”?`, hint: "Optional — pick the person who leads or represents it.", clearable: !!(n?.headRef || n?.headName), allowNew: true }; }
     return { title: "Who leads the team?", clearable: !!doc.leadRef };
   })();
 
@@ -402,7 +404,7 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
       {chipMenu && (() => {
         const chip = (doc.cells[chipMenu.key] || []).find((c) => c.id === chipMenu.chipId); if (!chip) return null;
         return (<ChipMenu chip={chip} p={person(chip.ref)} rect={chipMenu.rect} sourceName={source.name}
-          onRole={(v) => setRole(chipMenu.key, chip.id, v)} onLead={null}
+          onRole={(v) => setRole(chipMenu.key, chip.id, v)} onName={(v) => setChipName(chipMenu.key, chip.id, v)} onLead={null}
           onRemove={() => { removeChip(chipMenu.key, chip.id); setChipMenu(null); }}
           onClose={() => setChipMenu(null)} />);
       })()}
@@ -484,24 +486,34 @@ function PeoplePicker({ ctx, rect, source, onPick, onClose }) {
         {rest.length > 0 && <div className="pk-group">{anchors.length ? "Everyone else" : "People"}</div>}
         {rest.map((p) => <Row key={p.id} p={p} />)}
         {source.ready && nothing && <div className="pk-empty">{ql ? `No one matches “${q}”.` : ctx.hint || "Type a name to search the functional org."}</div>}
-        {ctx.allowPlaceholder && ql && (<button className="pk-row pk-ghost" onClick={() => { onPick({ ref: null, name: q.trim() }); setQ(""); }}><Plus size={14} /><span className="pk-text"><strong>{ctx.placeholderLabel ? ctx.placeholderLabel(q.trim()) : `Add “${q.trim()}” as an open role`}</strong><em>not linked to the functional org</em></span></button>)}
+        {ctx.allowNew && (ql
+          ? <button className="pk-row pk-ghost pk-new" onClick={() => { onPick({ ref: null, name: q.trim() }); setQ(""); }}><UserPlus size={15} /><span className="pk-text"><strong>Add “{q.trim()}” as a new person</strong><em>not in {source.name || "the org chart"} — lives on this matrix only</em></span></button>
+          : <button className="pk-row pk-ghost pk-new" onClick={(e) => e.currentTarget.closest(".pk").querySelector("input")?.focus()}><UserPlus size={15} /><span className="pk-text"><strong>Someone not in the org chart?</strong><em>type their name above to add them (or an open role)</em></span></button>)}
         {ctx.clearable && !ql && <button className="pk-row pk-ghost" onClick={() => onPick({ ref: null })}><X size={14} /><span className="pk-text"><strong>Clear</strong><em>leave it unassigned</em></span></button>}
       </div>
     </div>
   </>);
 }
 
-function ChipMenu({ chip, p, rect, sourceName, onRole, onLead, onRemove, onClose }) {
+function ChipMenu({ chip, p, rect, sourceName, onRole, onName, onLead, onRemove, onClose }) {
   const [role, setRoleDraft] = useState(chip.role || "");
-  const pos = place(rect, 300, 260);
-  const commit = () => { if ((role || "") !== (chip.role || "")) onRole(role.trim()); };
+  const [nm, setNm] = useState(chip.name || "");
+  const own = !chip.ref;   // lives on this matrix only
+  const pos = place(rect, 300, own ? 320 : 260);
+  const commit = () => { if (own && onName && nm.trim() !== (chip.name || "")) onName(nm.trim()); if ((role || "") !== (chip.role || "")) onRole(role.trim()); };
   return (<>
     <div className="pk-veil" onClick={() => { commit(); onClose(); }} />
     <div className="pk cm" style={pos}>
-      <div className="cm-name">{p?.name || chip.name || "Open role"}</div>
-      {p ? <div className="cm-meta">{p.title || "—"}<br />↳ reports to {p.managerName || "—"} <span>in {sourceName}</span></div> : <div className="cm-meta">{chip.ref ? `No longer in ${sourceName}` : "Open role — not linked to the functional org"}</div>}
-      <label className="cm-label">Role in this team</label>
-      <input className="cm-input" autoFocus value={role} placeholder={p?.title || "e.g. Tech lead"} onChange={(e) => setRoleDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { commit(); onClose(); } }} />
+      {own ? (<>
+        <label className="cm-label" style={{ marginTop: 0 }}>Name</label>
+        <input className="cm-input" value={nm} placeholder="Leave blank for an open role" onChange={(e) => setNm(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { commit(); onClose(); } }} />
+        <div className="cm-meta">Not in {sourceName || "the org chart"} — lives on this matrix only.</div>
+      </>) : (<>
+        <div className="cm-name">{p?.name || chip.name}</div>
+        {p ? <div className="cm-meta">{p.title || "—"}<br />↳ reports to {p.managerName || "—"} <span>in {sourceName}</span></div> : <div className="cm-meta">No longer in {sourceName}</div>}
+      </>)}
+      <label className="cm-label">{own ? "Title / role" : "Role in this team"}</label>
+      <input className="cm-input" autoFocus={!own || !!chip.name} value={role} placeholder={p?.title || "e.g. Tech lead"} onChange={(e) => setRoleDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { commit(); onClose(); } }} />
       <div className="cm-actions">
         {onLead && <button className="tb" onClick={() => { commit(); onLead(); }}><Crown size={13} /> Make subteam lead</button>}
         <button className="tb tb-danger" onClick={onRemove}><Trash2 size={13} /> Remove</button>
@@ -610,6 +622,9 @@ const mxStyles = `
 .mx-team:hover .mx-plus-sub { opacity: 1; }
 .mx-team-top .mx-plus-sub { position: absolute; right: 12px; bottom: 10px; margin: 0; } .mx-team-top { position: relative; padding-bottom: 14px; min-height: 74px; }
 .mx-grid > .mx-edge-l { border-left: 2px solid #cfc6b1; } .mx-grid > .mx-edge-t { border-top: 2px solid #cfc6b1; }
+.mx-chip-new { border-style: dashed; }
+.mx-avatar-new { background: color-mix(in srgb, var(--c) 14%, #fffdf8) !important; color: var(--c) !important; border: 1px dashed var(--c); }
+.pk .pk-row.pk-new { position: sticky; bottom: 0; background: #f6f1e4; margin-top: 0; z-index: 1; border-top: 1px solid var(--rule); box-shadow: 0 -6px 10px -6px rgba(40,30,10,.12); } .pk .pk-row.pk-new:hover { background: #efe8d6; } .pk-new strong { color: var(--ink); }
 .mx-rescue { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding: 12px 14px; border: 1px solid #b8442a; border-radius: 10px; background: #fbeee9; font-family: 'Iowan Old Style', Georgia, serif; font-size: 13.5px; line-height: 1.5; }
 .mx-rescue > div { flex: 1; min-width: 280px; }
 .mx-pod { background: #fffdf7; padding: 14px 14px 12px; box-shadow: inset 0 3px 0 var(--ink); }
