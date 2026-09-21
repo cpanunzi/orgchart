@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { supabase, isConfigured } from "./lib/supabase.js";
 import OrgChart from "./components/OrgChart.jsx";
 import ChartList from "./components/ChartList.jsx";
+import MatrixBoard from "./components/MatrixBoard.jsx";
 
 export default function App() {
   const [currentChartId, setCurrentChartId] = useState(null);
@@ -76,6 +77,9 @@ export default function App() {
 
   if (currentChartId) {
     const meta = charts.find((c) => c.id === currentChartId);
+    if (meta?.kind === "matrix") {
+      return <MatrixBoard key={currentChartId} chartId={currentChartId} chartName={meta?.name} onBack={() => goTo(null)} onRenamed={loadCharts} />;
+    }
     return (
       <OrgChart
         chartId={currentChartId}

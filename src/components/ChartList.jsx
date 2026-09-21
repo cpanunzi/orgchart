@@ -17,15 +17,13 @@ const seedTree = () => ({
 const isArchived = (c) => c.archived === true || c.archived === "true";
 
 // A team matrix is a chart whose JSON carries kind:"matrix" + the functional chart it pulls
-// its people from. It opens in the same editor, which adds the "add people from the org" picker.
+// its people from. It opens in MatrixBoard (subteams × functions), not the tree editor.
 const isMatrix = (c) => c.kind === "matrix";
 const rid = () => Math.random().toString(36).slice(2, 10);
 const matrixSeed = (name, sourceChartId) => ({
-  id: "root", name: name || "New team", title: "Team matrix", team: "",
-  kind: "matrix", sourceChartId, group: true, collapsed: false,
-  children: ["Product", "Engineering", "Go-to-market"].map((label) => ({
-    id: rid(), name: label, title: "", team: "", group: true, stack: true, collapsed: false, children: [],
-  })),
+  id: "root", kind: "matrix", v: 2, sourceChartId, leadRef: null,
+  functions: [{ id: rid(), label: "Core team", headRef: null }],
+  subteams: [], cells: {}, children: [],
 });
 
 export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
@@ -218,7 +216,7 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
           <div className="list-head list-head-2">
             <div>
               <h2>Team matrices</h2>
-              <div className="list-sub">Cross-functional teams, built from the people in your functional org.</div>
+              <div className="list-sub">Subteams down the side, functions across the top — built from the people in your functional org.</div>
             </div>
             <button className="tb tb-primary" disabled={!sources.length}
               onClick={() => { setCreatingMatrix(true); setMatrixSource(defaultSourceId); }}>
