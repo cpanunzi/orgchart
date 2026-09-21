@@ -5,36 +5,32 @@ import { sharedStyles } from "./styles.js";
 
 // ---------------------------------------------------------------------------------------------
 // Team matrix board.
-//   across the top : the team's own leadership ("groups" — e.g. Nick · Engineering, Tali · Product)
-//                    and, under each, its subteams (e.g. Field Engineers) with their members
-//   down the left  : the other parts of the business those subteams work with ("partners" —
-//                    e.g. Ericka · Account Mgmt). A subteam can have as many as it needs.
-//   cells          : the people from that part of the business who work with that subteam
+//   columns = the team's subteams (Customer Operations, Field Engineering …). A subteam doesn't
+//             belong to one leader — it is staffed from several functions at once.
+//   rows    = the functions that staff them, each headed by a person, in two blocks:
+//               core  — the team's own leadership (Tali · Product, Nick · Engineering)
+//               wider — the rest of the business (Ericka · Account Mgmt)
+//   cells   = the people from that function dedicated to that subteam, shown grouped by which
+//             of the function head's teams they come from ("Julian's team").
 // People are references (`ref`) into a functional chart (doc.sourceChartId), read live from it.
-//   { id:"root", kind:"matrix", v:3, sourceChartId, leadRef,
-//     groups:[{id,label,headRef}], subteams:[{id,groupId,name,leadRef}],
-//     partners:[{id,label,headRef}],
-//     cells:{ "<partnerId>|<subteamId>":[chip], "_m|<subteamId>":[chip] /* members */ } }
-//   chip = { id, ref, name, role }
+//   { id:"root", kind:"matrix", v:4, sourceChartId, leadRef,
+//     pods:[{id,name,leadRef}], rows:[{id,label,headRef,core}],
+//     cells:{ "<rowId>|<podId>": [{id, ref, name, role}] } }
 // ---------------------------------------------------------------------------------------------
 
 const rid = () => Math.random().toString(36).slice(2, 10);
 const clone = (x) => JSON.parse(JSON.stringify(x));
-const MEM = "_m";
-const ck = (rowId, stId) => `${rowId}|${stId}`;
+const ck = (rowId, podId) => `${rowId}|${podId}`;
 const COLORS = ["#3b6ea5", "#6d5aa8", "#2f7f86", "#5b7a3f", "#b07d2a", "#a0527a", "#6b6252"];
+const WIDE_COLOR = "#b8442a";
 const fnLabelFrom = (p) => {
   if (!p) return "";
   const t = (p.title || "").replace(/^\s*(chief|s?e?vp|svp|evp|vp|vice president|head|director|lead|manager|gm|general manager)\b[\s,]*(of\s+)?/i, "").trim();
   return t || p.team || p.title || "";
 };
 const initials = (name) => (name || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0] || "").join("").toUpperCase() || "?";
-const sameish = (a, b) => {
-  const fa = (a || "").trim().toLowerCase().split(/\s+/)[0] || "", fb = (b || "").trim().toLowerCase().split(/\s+/)[0] || "";
-  return !!fa && !!fb && (fa === fb || fa.startsWith(fb) || fb.startsWith(fa) || (fa.length >= 3 && fa.slice(0, 3) === fb.slice(0, 3)));
-};
 
-// gen-1 (tree of sections) → gen-2 shape, so there is a single upgrade path below
+// ---- upgrades from earlier board formats ------------------------------------------------------
 const v1toV2 = (tree) => {
   const core = { id: rid(), label: "Core team", headRef: null };
   const subteams = [], cells = {};
@@ -46,38 +42,33 @@ const v1toV2 = (tree) => {
   });
   return { v: 2, sourceChartId: tree?.sourceChartId || null, archived: tree?.archived, leadRef: null, functions: [core], subteams, cells };
 };
-
-// Upgrade older boards. Gen-2 had functions across the top and subteams down the side; the top
-// stays the top. With nothing placed yet, headed functions and person-named rows were really the
-// team's leadership → they become groups. If people were already placed, keep their structure.
-const toV3 = (raw, source) => {
-  if (raw && raw.v === 3) return { doc: raw, migrated: false };
-  const t = raw && raw.v === 2 ? raw : v1toV2(raw || {});
-  const groups = [], subteams = [], partners = [], cells = {};
-  const hasPeople = Object.values(t.cells || {}).some((a) => a && a.length);
-  if (!hasPeople) {
-    (t.functions || []).forEach((f) => { if (f.headRef) groups.push({ id: f.id, label: f.label || "", headRef: f.headRef }); });
-    (t.subteams || []).forEach((st) => {
-      const nm = (st.name || "").trim(); if (!nm && !st.leadRef) return;
-      const lead = st.leadRef || (source.list.find((p) => p.name.toLowerCase() === nm.toLowerCase()) || {}).id || null;
-      if (lead) { if (!groups.some((g) => g.headRef === lead)) groups.push({ id: st.id, label: fnLabelFrom(source.byId.get(lead)) || nm, headRef: lead }); return; }
-      if (groups.some((g) => sameish(nm, source.byId.get(g.headRef)?.name))) return; // same person, other spelling
-      groups.push({ id: st.id, label: nm, headRef: null });
+const toV4 = (raw) => {
+  if (raw && raw.v === 4) return { doc: raw, migrated: false };
+  const pods = [], rows = [], cells = {};
+  const put = (k, chips) => { if (chips && chips.length) cells[k] = [...(cells[k] || []), ...chips]; };
+  let t = raw || {};
+  if (t.v === 3) {
+    // v3: leaders (groups) owned subteams; partners ran down the side. Subteams stay as columns;
+    // leaders and partners both become function rows; a subteam's members sit in its leader's row.
+    (t.subteams || []).forEach((st) => pods.push({ id: st.id, name: st.name || "", leadRef: st.leadRef || null }));
+    (t.groups || []).forEach((g) => rows.push({ id: g.id, label: g.label || "", headRef: g.headRef || null, core: true }));
+    (t.partners || []).forEach((pt) => rows.push({ id: pt.id, label: pt.label || "", headRef: pt.headRef || null, core: false }));
+    Object.entries(t.cells || {}).forEach(([k, chips]) => {
+      const [rowId, stId] = k.split("|");
+      if (rowId === "_m") { const st = (t.subteams || []).find((x) => x.id === stId); if (st) put(ck(st.groupId, stId), chips); } else put(k, chips);
     });
   } else {
-    const g = { id: rid(), label: "Team", headRef: t.leadRef || null }; groups.push(g);
-    (t.subteams || []).forEach((st) => subteams.push({ id: st.id, groupId: g.id, name: st.name || "", leadRef: st.leadRef || null }));
-    (t.functions || []).forEach((f) => {
-      if (f.headRef) partners.push({ id: f.id, label: f.label || "", headRef: f.headRef });
-      (t.subteams || []).forEach((st) => { const chips = (t.cells || {})[`${st.id}|${f.id}`]; if (chips && chips.length) { const k = ck(f.headRef ? f.id : MEM, st.id); cells[k] = [...(cells[k] || []), ...chips]; } });
-    });
+    if (t.v !== 2) t = v1toV2(t);
+    (t.subteams || []).forEach((st) => { if ((st.name || "").trim() || st.leadRef) pods.push({ id: st.id, name: st.name || "", leadRef: st.leadRef || null }); });
+    (t.functions || []).forEach((f) => { rows.push({ id: f.id, label: f.label || "", headRef: f.headRef || null, core: true }); });
+    Object.entries(t.cells || {}).forEach(([k, chips]) => { const [sid, fid] = k.split("|"); put(ck(fid, sid), chips); });
   }
-  const doc = { id: "root", kind: "matrix", v: 3, sourceChartId: t.sourceChartId || null, leadRef: t.leadRef || null, groups, subteams, partners, cells, children: [] };
+  const doc = { id: "root", kind: "matrix", v: 4, sourceChartId: t.sourceChartId || null, leadRef: t.leadRef || null, pods, rows, cells, children: [] };
   if (t.archived) doc.archived = t.archived;
   return { doc, migrated: true };
 };
 
-// Index the functional org: everyone, by id, with their manager and their whole org beneath them.
+// Index the functional org: everyone by id, their manager, their reports, and their whole org.
 const buildSource = (tree) => {
   const list = [], byId = new Map(), kids = new Map();
   const rec = (n, parent) => {
@@ -88,14 +79,29 @@ const buildSource = (tree) => {
     (n.children || []).forEach((c) => rec(c, n));
   };
   if (tree) rec(tree, null);
-  const orgOf = (id) => { const out = new Set(); const go = (x) => { if (out.has(x)) return; out.add(x); (kids.get(x) || []).forEach(go); }; if (id) go(id); return out; };
-  return { list, byId, orgOf };
+  const kidsOf = (id) => kids.get(id) || [];
+  const orgOf = (id) => { const out = new Set(); const go = (x) => { if (out.has(x)) return; out.add(x); kidsOf(x).forEach(go); }; if (id) go(id); return out; };
+  // which of `headId`'s direct reports does `id` roll up to? (null if it's the head, or outside their org)
+  const branchOf = (headId, id) => { if (!headId || id === headId) return null; let cur = byId.get(id), guard = 0; while (cur && cur.managerId && cur.managerId !== headId && guard++ < 60) cur = byId.get(cur.managerId); return cur && cur.managerId === headId ? cur : null; };
+  return { list, byId, orgOf, kidsOf, branchOf };
 };
-const EMPTY_SOURCE = { list: [], byId: new Map(), orgOf: () => new Set(), name: "", ready: false };
+// ---- safety net against out-of-date tabs ------------------------------------------------------
+// An old tab running an earlier build doesn't understand this format; if it saves, it overwrites
+// the board with an empty one. We can't fix old tabs, so: keep a copy of every save in this
+// browser, refuse to load/overwrite formats NEWER than this build, and when a stale write lands
+// on an open board, put the good version straight back.
+const V = 4;
+const weight = (d) => (d ? (d.pods || []).length + (d.rows || []).length + Object.values(d.cells || {}).reduce((n, a) => n + a.length, 0) : 0);
+const bkKey = (id) => `atelier-matrix-backup:${id}`;
+const readBackup = (id) => { try { const b = JSON.parse(localStorage.getItem(bkKey(id)) || "null"); return b && b.doc && b.doc.v === V ? b : null; } catch { return null; } };
+const writeBackup = (id, doc) => { try { if (weight(doc) > 0) localStorage.setItem(bkKey(id), JSON.stringify({ at: Date.now(), doc })); } catch { /* storage full/blocked — not fatal */ } };
+
+const EMPTY_SOURCE = { list: [], byId: new Map(), orgOf: () => new Set(), kidsOf: () => [], branchOf: () => null, name: "", ready: false };
 
 // small move/remove toolbar shown on hover (module-level so it isn't remounted every render)
-const Tools = ({ onPrev, onNext, onRemove, prevIcon, nextIcon, canPrev, canNext, what }) => (
+const Tools = ({ onPrev, onNext, onRemove, prevIcon, nextIcon, canPrev, canNext, what, extra }) => (
   <div className="mx-tools">
+    {extra}
     <button className="mx-tool" disabled={!canPrev} onClick={onPrev} title="Move">{prevIcon}</button>
     <button className="mx-tool" disabled={!canNext} onClick={onNext} title="Move">{nextIcon}</button>
     <button className="mx-tool mx-tool-danger" onClick={onRemove} title={`Remove ${what}`}><Trash2 size={13} /></button>
@@ -104,16 +110,17 @@ const Tools = ({ onPrev, onNext, onRemove, prevIcon, nextIcon, canPrev, canNext,
 
 export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   const [doc, setDocState] = useState(null);
-  const [raw, setRaw] = useState(null);           // an older-format board waiting for the org to load before upgrading
   const [name, setName] = useState(chartName || "");
   const [editingName, setEditingName] = useState(false);
   const [history, setHistory] = useState([]);
   const [saveStatus, setSaveStatus] = useState("synced");
   const [loadError, setLoadError] = useState(null);
+  const [tooNew, setTooNew] = useState(false);   // saved by a newer build than this tab — don't touch it
+  const [rescue, setRescue] = useState(null);     // { at, doc } — a fuller copy from this browser, offered back
   const [source, setSource] = useState(EMPTY_SOURCE);
-  const [picker, setPicker] = useState(null);     // { mode, stId?, pid?, gid?, rect }
-  const [chipMenu, setChipMenu] = useState(null); // { key, chipId, stId, rect }
-  const [editing, setEditing] = useState(null);   // { type:"group"|"sub"|"partner", id }
+  const [picker, setPicker] = useState(null);     // { mode, podId?, rowId?, core?, rect }
+  const [chipMenu, setChipMenu] = useState(null); // { key, chipId, podId, rect }
+  const [editing, setEditing] = useState(null);   // { type:"pod"|"row", id }
   const [drag, setDrag] = useState(null);         // { key, chipId }
   const [overKey, setOverKey] = useState(null);
   const docRef = useRef(null);
@@ -137,6 +144,7 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
       const ts = new Date(data.updated_at).getTime();
       lastSavedAt.current = ts; lastRemoteAt.current = Math.max(lastRemoteAt.current, ts);
       dirty.current = false; setSaveStatus("synced");
+      if (nextDoc !== undefined) writeBackup(chartId, nextDoc);
     }, 600);
   }, [chartId]);
 
@@ -151,7 +159,11 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
       if (cancelled) return;
       if (error) { setLoadError(error.message); return; }
       setName(data.name); lastRemoteAt.current = new Date(data.updated_at).getTime();
-      if (data.tree && data.tree.v === 3) setDoc(data.tree, { save: false }); else setRaw(data.tree || {});
+      if (data.tree && data.tree.v > V) { setTooNew(true); return; }
+      const { doc: d, migrated } = toV4(data.tree);
+      const bk = readBackup(chartId);
+      if (bk && weight(bk.doc) > weight(d)) { setRescue(bk); setDoc(d, { save: false }); return; } // don't save over anything until she chooses
+      setDoc(d, { save: migrated });
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -165,15 +177,16 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
         if (Math.abs(ts - lastSavedAt.current) < 3000 || ts <= lastRemoteAt.current) return;
         if (dirty.current || saveTimer.current) return;
         lastRemoteAt.current = ts;
-        if (payload.new.tree && payload.new.tree.v === 3) setDoc(payload.new.tree, { save: false });
-        setName(payload.new.name);
+        const incoming = payload.new.tree;
+        if (!incoming || incoming.v !== V) { if (docRef.current && weight(docRef.current) > 0) scheduleSave(docRef.current, undefined); return; }
+        setDoc(incoming, { save: false }); setName(payload.new.name);
       }).subscribe();
     return () => { supabase.removeChannel(ch); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartId]);
 
   // ---- the functional org these people come from -------------------------------------------
-  const sourceChartId = doc?.sourceChartId || raw?.sourceChartId || null;
+  const sourceChartId = doc?.sourceChartId || null;
   useEffect(() => {
     if (!sourceChartId) return;
     let cancelled = false;
@@ -185,14 +198,6 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
     })();
     return () => { cancelled = true; };
   }, [sourceChartId]);
-
-  // older boards are upgraded once the org is known (the upgrade reads people's names from it)
-  useEffect(() => {
-    if (!raw || doc) return;
-    if (raw.sourceChartId && !source.ready) return;
-    setDoc(toV3(raw, source).doc); setRaw(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [raw, source.ready]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -216,24 +221,20 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   const peopleIn = (pred) => Object.entries(doc.cells || {}).reduce((n, [k, v]) => n + (pred(k) ? v.length : 0), 0);
   const confirmLoss = (what, n) => !n || window.confirm(`Remove ${what} and the ${n} ${n === 1 ? "person" : "people"} placed in it?`);
 
-  const addGroup = (headRef, label) => { const id = rid(); apply((d) => { d.groups.push({ id, label: label || "", headRef: headRef || null }); return d; }); setEditing({ type: "group", id }); };
-  const addPartner = (headRef, label) => { const id = rid(); apply((d) => { d.partners.push({ id, label: label || "", headRef: headRef || null }); return d; }); setEditing({ type: "partner", id }); };
-  const addSubteam = (groupId) => { const id = rid(); apply((d) => { d.subteams.push({ id, groupId, name: "", leadRef: null }); return d; }); setEditing({ type: "sub", id }); };
+  const addPod = () => { const id = rid(); apply((d) => { d.pods.push({ id, name: "", leadRef: null }); return d; }); setEditing({ type: "pod", id }); };
+  const addRow = (core, headRef, label) => { const id = rid(); apply((d) => { d.rows.push({ id, label: label || "", headRef: headRef || null, core }); return d; }); setEditing({ type: "row", id }); };
   const rename = (arr, id, field, v) => apply((d) => { const x = d[arr].find((y) => y.id === id); if (x) x[field] = v.trim(); return d; });
-  const moveIn = (arr, id, delta, sameGroup) => apply((d) => {
+  const moveIn = (arr, id, delta, within) => apply((d) => {
     const a = d[arr]; const i = a.findIndex((x) => x.id === id); if (i < 0) return d;
-    let j = i + delta;
-    if (sameGroup) { while (j >= 0 && j < a.length && a[j].groupId !== a[i].groupId) j += delta; }
+    let j = i + delta; if (within) while (j >= 0 && j < a.length && !!a[j][within] !== !!a[i][within]) j += delta;
     if (j < 0 || j >= a.length) return d;
     const [x] = a.splice(i, 1); a.splice(j, 0, x); return d;
   });
-  const removeGroup = (g) => { const sts = doc.subteams.filter((s) => s.groupId === g.id).map((s) => s.id); const n = peopleIn((k) => sts.includes(k.split("|")[1]));
-    if (!confirmLoss(`"${g.label || displayName(g.headRef, "this team")}"${sts.length ? ` with its ${sts.length} subteam${sts.length === 1 ? "" : "s"}` : ""}`, n)) return;
-    apply((d) => { d.groups = d.groups.filter((x) => x.id !== g.id); d.subteams = d.subteams.filter((s) => s.groupId !== g.id); dropCells(d, (k) => sts.includes(k.split("|")[1])); return d; }); };
-  const removeSub = (st) => { const n = peopleIn((k) => k.split("|")[1] === st.id); if (!confirmLoss(`"${st.name || "this subteam"}"`, n)) return;
-    apply((d) => { d.subteams = d.subteams.filter((x) => x.id !== st.id); dropCells(d, (k) => k.split("|")[1] === st.id); return d; }); };
-  const removePartner = (pt) => { const n = peopleIn((k) => k.split("|")[0] === pt.id); if (!confirmLoss(`the "${pt.label || "relationship"}" row`, n)) return;
-    apply((d) => { d.partners = d.partners.filter((x) => x.id !== pt.id); dropCells(d, (k) => k.split("|")[0] === pt.id); return d; }); };
+  const toggleCore = (row) => apply((d) => { const x = d.rows.find((y) => y.id === row.id); if (x) x.core = !x.core; return d; });
+  const removePod = (pod) => { const n = peopleIn((k) => k.split("|")[1] === pod.id); if (!confirmLoss(`"${pod.name || "this subteam"}"`, n)) return;
+    apply((d) => { d.pods = d.pods.filter((x) => x.id !== pod.id); dropCells(d, (k) => k.split("|")[1] === pod.id); return d; }); };
+  const removeRow = (row) => { const n = peopleIn((k) => k.split("|")[0] === row.id); if (!confirmLoss(`the "${row.label || displayName(row.headRef, "function")}" row`, n)) return;
+    apply((d) => { d.rows = d.rows.filter((x) => x.id !== row.id); dropCells(d, (k) => k.split("|")[0] === row.id); return d; }); };
   const addTo = (key, pick) => apply((d) => { const arr = d.cells[key] || (d.cells[key] = []); if (pick.ref && arr.some((c) => c.ref === pick.ref)) return d; arr.push({ id: rid(), ref: pick.ref || null, name: pick.name || "", role: "" }); return d; });
   const removeChip = (key, chipId) => apply((d) => { d.cells[key] = (d.cells[key] || []).filter((c) => c.id !== chipId); if (!d.cells[key].length) delete d.cells[key]; return d; });
   const setRole = (key, chipId, role) => apply((d) => { const c = (d.cells[key] || []).find((x) => x.id === chipId); if (c) c.role = role; return d; });
@@ -241,54 +242,64 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
 
   const onPick = (pick) => {
     const p = picker; if (!p) return;
-    if (p.mode === "members") { addTo(ck(MEM, p.stId), pick); return; }        // stays open — add several
-    if (p.mode === "cell") { addTo(ck(p.pid, p.stId), pick); return; }
-    const setRef = (arr, id, field) => apply((d) => { const x = d[arr].find((y) => y.id === id); if (x) x[field] = pick.ref || null; return d; });
-    if (p.mode === "newGroup") addGroup(pick.ref, pick.ref ? fnLabelFrom(person(pick.ref)) : pick.name);
-    if (p.mode === "newPartner") addPartner(pick.ref, pick.ref ? fnLabelFrom(person(pick.ref)) : pick.name);
-    if (p.mode === "groupHead") setRef("groups", p.gid, "headRef");
-    if (p.mode === "partnerHead") setRef("partners", p.pid, "headRef");
-    if (p.mode === "subLead") setRef("subteams", p.stId, "leadRef");
+    if (p.mode === "cell") { addTo(ck(p.rowId, p.podId), pick); return; }      // stays open — add several
+    if (p.mode === "newRow") addRow(p.core, pick.ref, pick.ref ? fnLabelFrom(person(pick.ref)) : pick.name);
+    if (p.mode === "rowHead") apply((d) => { const x = d.rows.find((y) => y.id === p.rowId); if (x) x.headRef = pick.ref || null; return d; });
+    if (p.mode === "podLead") apply((d) => { const x = d.pods.find((y) => y.id === p.podId); if (x) x.leadRef = pick.ref || null; return d; });
     if (p.mode === "teamLead") apply((d) => { d.leadRef = pick.ref || null; return d; });
     setPicker(null);
   };
 
   const stats = useMemo(() => {
-    if (!doc) return { people: 0, links: 0 };
-    const refs = new Set(); let links = 0;
-    Object.entries(doc.cells || {}).forEach(([k, arr]) => { if (!k.startsWith(MEM + "|") && arr.length) links++; arr.forEach((c) => refs.add(c.ref || c.id)); });
-    return { people: refs.size, links };
+    if (!doc) return { people: 0 };
+    const refs = new Set(); Object.values(doc.cells || {}).forEach((arr) => arr.forEach((c) => refs.add(c.ref || c.id)));
+    return { people: refs.size };
   }, [doc]);
 
   if (loadError) return (<div className="org-root"><style>{sharedStyles}</style><button className="tb" onClick={onBack}>← Back</button><p style={{ marginTop: 24 }}>Couldn't load this team: {loadError}</p></div>);
+  if (tooNew) return (<div className="org-root"><style>{sharedStyles}</style><button className="tb" onClick={onBack}>← Back</button>
+    <p style={{ marginTop: 24, maxWidth: 560, lineHeight: 1.6, fontFamily: "Iowan Old Style, Georgia, serif" }}>This board was saved by a newer version of the app than this tab is running. <strong>Reload the page</strong> to get the latest version — nothing has been changed.</p>
+    <button className="tb tb-primary" onClick={() => window.location.reload()}>Reload</button></div>);
   if (!doc) return <div style={{ padding: 60, fontFamily: "Iowan Old Style, Georgia, serif", color: "#8a7d6c" }}>Loading…</div>;
 
-  const G = doc.groups, S = doc.subteams, P = doc.partners;
-  // column plan: col 1 = the left rail; then per group its subteam columns + a slim "add subteam" column; last = "add team"
-  const plan = []; let col = 2; const tracks = ["252px"];
-  G.forEach((g, gi) => {
-    const sts = S.filter((s) => s.groupId === g.id); const start = col;
-    const cols = sts.map((st) => { tracks.push("minmax(250px, 1fr)"); return { st, col: col++ }; });
-    tracks.push(sts.length ? "124px" : "250px"); const addCol = col++;
-    plan.push({ g, gi, start, end: col, cols, addCol, color: COLORS[gi % COLORS.length] });
-  });
-  tracks.push("200px"); const lastCol = col;
-  const R_GROUP = 1, R_SUB = 2, R_P0 = 3, R_ADD = 3 + P.length;
-  const relCount = (stId) => P.filter((pt) => (doc.cells[ck(pt.id, stId)] || []).length).length;
+  const PODS = doc.pods, ROWS = doc.rows;
+  const coreRows = ROWS.filter((r) => r.core), wideRows = ROWS.filter((r) => !r.core);
+  const lastCol = PODS.length + 2;
+  const tracks = ["272px", ...PODS.map(() => "minmax(250px, 1fr)"), "180px"].join(" ");
+  const rowColor = (row) => (row.core ? COLORS[coreRows.indexOf(row) % COLORS.length] : WIDE_COLOR);
+  const podStaffing = (podId) => ROWS.filter((r) => (doc.cells[ck(r.id, podId)] || []).length).length;
 
-  const renderChips = (k, stId, color) => (doc.cells[k] || []).map((c) => {
+  const renderChip = (k, podId, color, c) => {
     const p = person(c.ref); const missing = c.ref && source.ready && !p;
     return (
       <button key={c.id} className={`mx-chip ${!c.ref ? "mx-chip-open" : ""} ${missing ? "mx-chip-missing" : ""} ${drag?.chipId === c.id ? "mx-chip-drag" : ""}`} style={{ "--c": color }}
         draggable onDragStart={(e) => { setDrag({ key: k, chipId: c.id }); if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); } }}
         onDragEnd={() => { setDrag(null); setOverKey(null); }}
-        onClick={(e) => { const rc = e.currentTarget.getBoundingClientRect(); setPicker(null); setChipMenu({ key: k, chipId: c.id, stId, rect: { left: rc.left, top: rc.top, bottom: rc.bottom } }); }}
+        onClick={(e) => { const rc = e.currentTarget.getBoundingClientRect(); setPicker(null); setChipMenu({ key: k, chipId: c.id, podId, rect: { left: rc.left, top: rc.top, bottom: rc.bottom } }); }}
         title={p ? `${p.title || "—"} · reports to ${p.managerName || "—"}` : missing ? `No longer in ${source.name}` : "Open role / not in the org"}>
         <span className="mx-avatar" style={c.ref ? { background: color } : undefined}>{c.ref ? initials(p?.name || c.name) : "?"}</span>
         <span className="mx-chip-text"><strong>{p?.name || c.name || "Open role"}</strong><em>{c.role || p?.title || (c.ref ? "" : "open role")}</em></span>
       </button>
     );
-  });
+  };
+  // people in a cell, grouped by which of the function head's teams they roll up to
+  const renderCellPeople = (k, podId, row, color) => {
+    const chips = doc.cells[k] || []; if (!chips.length) return null;
+    const loose = [], teams = new Map();
+    chips.forEach((c) => {
+      const br = row.headRef && c.ref ? source.branchOf(row.headRef, c.ref) : null;
+      if (br && source.kidsOf(br.id).length) { if (!teams.has(br.id)) teams.set(br.id, { lead: br, chips: [] }); teams.get(br.id).chips.push(c); } else loose.push(c);
+    });
+    return (<>
+      {loose.length > 0 && <div className="mx-chiprow">{loose.map((c) => renderChip(k, podId, color, c))}</div>}
+      {[...teams.values()].map((t) => (
+        <div className="mx-branch" key={t.lead.id}>
+          <div className="mx-branch-label">from {t.lead.name}'s team</div>
+          <div className="mx-chiprow">{t.chips.map((c) => renderChip(k, podId, color, c))}</div>
+        </div>
+      ))}
+    </>);
+  };
   const dropProps = (k) => ({
     onDragOver: (e) => { if (!drag) return; e.preventDefault(); if (overKey !== k) setOverKey(k); },
     onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOverKey(null); },
@@ -296,18 +307,59 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   });
 
   const pickerCtx = picker && (() => {
-    const st = S.find((s) => s.id === picker.stId), pt = P.find((x) => x.id === picker.pid), g = G.find((x) => x.id === (picker.gid || st?.groupId));
+    const pod = PODS.find((x) => x.id === picker.podId), row = ROWS.find((x) => x.id === picker.rowId);
     const org = (ref) => (ref ? { id: ref, label: `${displayName(ref)}'s org` } : null);
-    if (picker.mode === "members") return { title: `Who's in ${st?.name || "this subteam"}?`, anchor: org(g?.headRef) || org(st?.leadRef), taken: new Set((doc.cells[ck(MEM, picker.stId)] || []).map((c) => c.ref).filter(Boolean)), multi: true, allowPlaceholder: true };
-    if (picker.mode === "cell") return { title: `${pt?.label || "This part of the business"} → ${st?.name || "subteam"}`, anchor: org(pt?.headRef), taken: new Set((doc.cells[ck(picker.pid, picker.stId)] || []).map((c) => c.ref).filter(Boolean)), multi: true, allowPlaceholder: true };
-    if (picker.mode === "newGroup") return { title: `Who leads this part of ${name || "the team"}?`, hint: "Pick the leader — e.g. the head of engineering or product for this team. Or type a name for the area and add it without a leader.", allowPlaceholder: true, placeholderLabel: (q) => `Add “${q}” with no leader yet` };
-    if (picker.mode === "newPartner") return { title: "Which part of the business do they work with?", hint: "Pick who heads it — e.g. the head of account management. Or type a name and add it without a head.", allowPlaceholder: true, placeholderLabel: (q) => `Add “${q}” with no head yet` };
-    if (picker.mode === "groupHead") return { title: `Who leads ${g?.label || "this"}?`, clearable: !!g?.headRef };
-    if (picker.mode === "partnerHead") return { title: `Who heads ${pt?.label || "this"}?`, clearable: !!pt?.headRef };
-    if (picker.mode === "subLead") return { title: `Who leads ${st?.name || "this subteam"}?`, anchor: org(g?.headRef), clearable: !!st?.leadRef };
+    if (picker.mode === "cell") return { title: `${row?.label || displayName(row?.headRef, "This function")} people on ${pod?.name || "this subteam"}`, anchor: org(row?.headRef), byTeam: true, taken: new Set((doc.cells[ck(picker.rowId, picker.podId)] || []).map((c) => c.ref).filter(Boolean)), multi: true, allowPlaceholder: true };
+    if (picker.mode === "newRow") return picker.core
+      ? { title: `Who leads a function inside ${name || "this team"}?`, hint: "Pick the leader — e.g. the product lead, the engineering lead. Or type a function name to add it without a leader.", allowPlaceholder: true, placeholderLabel: (q) => `Add “${q}” with no leader yet` }
+      : { title: "Which other part of the business?", hint: "Pick who heads it — e.g. the head of account management. Or type a name to add it without a head.", allowPlaceholder: true, placeholderLabel: (q) => `Add “${q}” with no head yet` };
+    if (picker.mode === "rowHead") return { title: `Who heads ${row?.label || "this function"}?`, clearable: !!row?.headRef };
+    if (picker.mode === "podLead") return { title: `Who leads ${pod?.name || "this subteam"}?`, clearable: !!pod?.leadRef };
     return { title: "Who leads the team?", clearable: !!doc.leadRef };
   })();
 
+  // ---- grid rows: header, then the two blocks of function rows ------------------------------
+  let gr = 2; const body = [];
+  const block = (core, rowsIn, title, blurb, addLabel) => {
+    body.push(
+      <div key={`bar-${core}`} className={`mx-bar ${core ? "mx-bar-core" : "mx-bar-wide"}`} style={{ gridColumn: `1 / ${lastCol + 1}`, gridRow: gr++ }}>
+        <div className="mx-bar-in">
+          <span className="mx-bar-title">{title}</span>
+          <button className="mx-addbtn mx-addbtn-sm" onClick={(e) => openPicker(e, { mode: "newRow", core })}><Plus size={14} strokeWidth={1.8} /> {addLabel}</button>
+          <span className="mx-bar-blurb">{blurb}</span>
+        </div>
+      </div>
+    );
+    rowsIn.forEach((row, i) => {
+      const r = gr++; const head = person(row.headRef); const color = rowColor(row);
+      body.push(
+        <div key={row.id} className="mx-rowhead" style={{ gridColumn: 1, gridRow: r, "--c": color }}>
+          <div className="mx-fn-row">
+            <InlineEdit className="mx-fn-label" value={row.label} placeholder="Name this function" autoEdit={editing?.type === "row" && editing.id === row.id} onDone={() => setEditing(null)} onCommit={(v) => rename("rows", row.id, "label", v)} />
+            <Tools what="this function" prevIcon={<ChevronUp size={13} />} nextIcon={<ChevronDown size={13} />} canPrev={i > 0} canNext={i < rowsIn.length - 1}
+              onPrev={() => moveIn("rows", row.id, -1, "core")} onNext={() => moveIn("rows", row.id, 1, "core")} onRemove={() => removeRow(row)}
+              extra={<button className="mx-tool" onClick={() => toggleCore(row)} title={row.core ? "Move to “Rest of the business”" : `Move to “${name || "Team"} leadership”`}>{row.core ? <ChevronDown size={13} strokeWidth={2.4} /> : <ChevronUp size={13} strokeWidth={2.4} />}</button>} />
+          </div>
+          <button className={`mx-head ${head ? "" : "mx-head-empty"}`} onClick={(e) => openPicker(e, { mode: "rowHead", rowId: row.id })}>
+            {head ? (<><span className="mx-avatar mx-avatar-lg" style={{ background: color }}>{initials(head.name)}</span><span className="mx-head-text"><strong>{head.name}</strong><em>{head.title || "Head"}</em></span></>) : (<><UserPlus size={14} strokeWidth={1.7} /><span>Who heads it?</span></>)}
+          </button>
+        </div>
+      );
+      PODS.forEach((pod, ci) => {
+        const k = ck(row.id, pod.id); const has = (doc.cells[k] || []).length > 0;
+        body.push(
+          <div key={k} className={`mx-cell ${overKey === k ? "mx-cell-over" : ""} ${has ? "mx-cell-linked" : "mx-cell-empty"}`} style={{ gridColumn: ci + 2, gridRow: r, "--c": color }} {...dropProps(k)}>
+            {renderCellPeople(k, pod.id, row, color)}
+            <button className="mx-add" onClick={(e) => openPicker(e, { mode: "cell", rowId: row.id, podId: pod.id })} title={`Who from ${row.label || "this function"} is on ${pod.name || "this subteam"}?`}><Plus size={14} strokeWidth={1.8} />{has ? "" : <span>Add people</span>}</button>
+          </div>
+        );
+      });
+      body.push(<div key={row.id + "-fill"} className="mx-fill" style={{ gridColumn: lastCol, gridRow: r }} />);
+    });
+    if (!rowsIn.length) body.push(<div key={`empty-${core}`} className="mx-emptyrow" style={{ gridColumn: `1 / ${lastCol + 1}`, gridRow: gr++ }}>{core ? "e.g. Tali for Product, Nick for Engineering — the people who lead a function inside this team." : "e.g. Account Mgmt (Ericka) — add as many as the subteams need."}</div>);
+  };
+  block(true, coreRows, `${name || "Team"} leadership`, "the functions inside this team — who each gives to every subteam", "Add a function lead");
+  block(false, wideRows, "Rest of the business", "other parts of the business these subteams also sit in or work with", "Add a part of the business");
 
   return (
     <div className="org-root mx-root">
@@ -327,115 +379,54 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
           {doc.leadRef ? (<span><strong>{displayName(doc.leadRef)}</strong><em>{person(doc.leadRef)?.title || "Team lead"}</em></span>) : <span><strong>Set team lead</strong><em>who runs {name || "this team"}?</em></span>}
         </button>
         <div className="mx-spacer" />
-        <div className="mx-stats"><span><strong>{S.length}</strong> subteams</span><span><strong>{stats.links}</strong> relationships</span><span><strong>{stats.people}</strong> people</span></div>
+        <div className="mx-stats"><span><strong>{PODS.length}</strong> subteams</span><span><strong>{ROWS.length}</strong> functions</span><span><strong>{stats.people}</strong> people</span></div>
         <button className="tb" onClick={undo} disabled={!history.length} title="Undo (⌘Z)"><RotateCcw size={14} strokeWidth={1.5} /> Undo</button>
         <div className={`mx-save mx-save-${saveStatus}`}>{saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save error" : "Saved"}</div>
       </header>
 
+      {rescue && (
+        <div className="mx-rescue">
+          <div><strong>This board looks emptier than the last version saved from this browser</strong> ({new Date(rescue.at).toLocaleString()} — {rescue.doc.pods.length} subteams, {rescue.doc.rows.length} functions). An out-of-date tab may have overwritten it.</div>
+          <button className="tb tb-primary" onClick={() => { setHistory((h) => [...h, docRef.current]); setDoc(rescue.doc); setRescue(null); }}>Restore that version</button>
+          <button className="tb" onClick={() => { writeBackup(chartId, docRef.current); try { if (weight(docRef.current) === 0) localStorage.removeItem(bkKey(chartId)); } catch { /* ignore */ } setRescue(null); }}>Keep what's here</button>
+        </div>
+      )}
       <div className="mx-sub">
-        Across the top: <strong>{name || "the team"}'s leadership and their subteams</strong>. Down the side: <strong>the parts of the business they work with</strong> — as many as each subteam needs. People come from <strong>{source.name || "your functional org"}</strong>; their reporting line stays there.
+        Each <strong>subteam</strong> (a column) is staffed from several <strong>functions</strong> (the rows) at once — e.g. a PM from product, dedicated engineers, someone from account management. People come from <strong>{source.name || "your functional org"}</strong>; their reporting line stays there.
       </div>
 
       <div className="mx-scroll">
-        <div className="mx-grid" style={{ gridTemplateColumns: tracks.join(" ") }}>
-          <div className="mx-corner" style={{ gridColumn: 1, gridRow: `${R_GROUP} / span 2` }}>
-            <span className="mx-axis mx-axis-col">Leadership → subteams</span>
-            <span className="mx-axis mx-axis-row">Works with ↓</span>
+        <div className="mx-grid" style={{ gridTemplateColumns: tracks }}>
+          <div className="mx-corner" style={{ gridColumn: 1, gridRow: 1 }}>
+            <span className="mx-axis mx-axis-col">Subteams →</span>
+            <button className="mx-addbtn mx-addbtn-sm mx-corner-add" onClick={addPod}><Plus size={14} strokeWidth={1.8} /> Add subteam</button>
+            <span className="mx-axis mx-axis-row">Staffed by ↓</span>
           </div>
-
-          {plan.map(({ g, gi, start, end, color }) => {
-            const head = person(g.headRef);
-            return (
-              <div className="mx-group" key={g.id} style={{ gridColumn: `${start} / ${end}`, gridRow: R_GROUP, "--c": color }}>
-                <div className="mx-fn-bar" />
-                <div className="mx-group-row">
-                  <InlineEdit className="mx-group-label" value={g.label} placeholder="Name this area" autoEdit={editing?.type === "group" && editing.id === g.id} onDone={() => setEditing(null)} onCommit={(v) => rename("groups", g.id, "label", v)} />
-                  <Tools what="this team and its subteams" prevIcon={<ChevronLeft size={13} />} nextIcon={<ChevronRight size={13} />} canPrev={gi > 0} canNext={gi < G.length - 1} onPrev={() => moveIn("groups", g.id, -1)} onNext={() => moveIn("groups", g.id, 1)} onRemove={() => removeGroup(g)} />
-                </div>
-                <button className={`mx-head mx-head-inline ${head ? "" : "mx-head-empty"}`} onClick={(e) => openPicker(e, { mode: "groupHead", gid: g.id })}>
-                  {head ? (<><span className="mx-avatar mx-avatar-lg" style={{ background: color }}>{initials(head.name)}</span><span className="mx-head-text"><strong>{head.name}</strong><em>{head.title || "Leader"}</em></span></>) : (<><UserPlus size={14} strokeWidth={1.7} /><span>Who leads it?</span></>)}
-                </button>
+          {PODS.map((pod, i) => { const n = podStaffing(pod.id); return (
+            <div className="mx-pod" key={pod.id} style={{ gridColumn: i + 2, gridRow: 1 }}>
+              <div className="mx-fn-row">
+                <InlineEdit className="mx-sub-name" value={pod.name} placeholder="Name this subteam" autoEdit={editing?.type === "pod" && editing.id === pod.id} onDone={() => setEditing(null)} onCommit={(v) => rename("pods", pod.id, "name", v)} />
+                <Tools what="this subteam" prevIcon={<ChevronLeft size={13} />} nextIcon={<ChevronRight size={13} />} canPrev={i > 0} canNext={i < PODS.length - 1} onPrev={() => moveIn("pods", pod.id, -1)} onNext={() => moveIn("pods", pod.id, 1)} onRemove={() => removePod(pod)} />
               </div>
-            );
-          })}
-          <div className="mx-addfn" style={{ gridColumn: lastCol, gridRow: `${R_GROUP} / span 2` }}>
-            <button className="mx-addbtn" onClick={(e) => openPicker(e, { mode: "newGroup" })}><Plus size={15} strokeWidth={1.8} /> Add a leader's team</button>
-            {G.length === 0 && <span className="mx-hint">Start here — e.g. Nick (Engineering), Tali (Product).</span>}
+              <button className={`mx-sublead ${pod.leadRef ? "" : "mx-sublead-empty"}`} onClick={(e) => openPicker(e, { mode: "podLead", podId: pod.id })}>
+                <Crown size={12} strokeWidth={pod.leadRef ? 1.8 : 1.6} /><span>{pod.leadRef ? <><strong>{displayName(pod.leadRef)}</strong> leads</> : "set a lead"}</span>
+                <span className="mx-rel">{n ? `staffed from ${n} function${n === 1 ? "" : "s"}` : ""}</span>
+              </button>
+            </div>); })}
+          <div className="mx-addfn" style={{ gridColumn: lastCol, gridRow: 1 }}>
+            <button className="mx-addbtn" onClick={addPod}><Plus size={15} strokeWidth={1.8} /> Add subteam</button>
+            {PODS.length === 0 && <span className="mx-hint">e.g. “Customer Operations”, “Field Engineering”</span>}
           </div>
-
-          {plan.map(({ g, cols, addCol, color }) => (
-            <React.Fragment key={g.id + "-subs"}>
-              {cols.map(({ st, col: c }, i) => {
-                const k = ck(MEM, st.id); const n = relCount(st.id);
-                return (
-                  <div key={st.id} className={`mx-sub-head ${overKey === k ? "mx-cell-over" : ""}`} style={{ gridColumn: c, gridRow: R_SUB, "--c": color }} {...dropProps(k)}>
-                    <div className="mx-fn-row">
-                      <InlineEdit className="mx-sub-name" value={st.name} placeholder="Name this subteam" autoEdit={editing?.type === "sub" && editing.id === st.id} onDone={() => setEditing(null)} onCommit={(v) => rename("subteams", st.id, "name", v)} />
-                      <Tools what="this subteam" prevIcon={<ChevronLeft size={13} />} nextIcon={<ChevronRight size={13} />} canPrev={i > 0} canNext={i < cols.length - 1} onPrev={() => moveIn("subteams", st.id, -1, true)} onNext={() => moveIn("subteams", st.id, 1, true)} onRemove={() => removeSub(st)} />
-                    </div>
-                    <button className={`mx-sublead ${st.leadRef ? "" : "mx-sublead-empty"}`} onClick={(e) => openPicker(e, { mode: "subLead", stId: st.id })}>
-                      {st.leadRef ? (<><Crown size={12} strokeWidth={1.8} /><span><strong>{displayName(st.leadRef)}</strong> leads</span></>) : (<><Crown size={12} strokeWidth={1.6} /><span>set a lead</span></>)}
-                      <span className="mx-rel">{n ? `works with ${n} part${n === 1 ? "" : "s"} of the business` : ""}</span>
-                    </button>
-                    <div className="mx-members">{renderChips(k, st.id, color)}
-                      <button className="mx-add mx-add-on" onClick={(e) => openPicker(e, { mode: "members", stId: st.id })}><Plus size={14} strokeWidth={1.8} /><span>{(doc.cells[k] || []).length ? "Add" : "Add the people in this subteam"}</span></button>
-                    </div>
-                  </div>
-                );
-              })}
-              <div className="mx-addsub" style={{ gridColumn: addCol, gridRow: R_SUB }}>
-                <button className="mx-addbtn mx-addbtn-sm" onClick={() => addSubteam(g.id)}><Plus size={14} strokeWidth={1.8} /> Subteam</button>
-                {cols.length === 0 && <span className="mx-hint">e.g. “Field Engineers”</span>}
-              </div>
-            </React.Fragment>
-          ))}
-
-          {P.map((pt, r) => {
-            const head = person(pt.headRef); const row = R_P0 + r;
-            return (
-              <React.Fragment key={pt.id}>
-                <div className="mx-rowhead" style={{ gridColumn: 1, gridRow: row }}>
-                  <div className="mx-fn-row">
-                    <InlineEdit className="mx-fn-label" value={pt.label} placeholder="Name this part of the business" autoEdit={editing?.type === "partner" && editing.id === pt.id} onDone={() => setEditing(null)} onCommit={(v) => rename("partners", pt.id, "label", v)} />
-                    <Tools what="this relationship" prevIcon={<ChevronUp size={13} />} nextIcon={<ChevronDown size={13} />} canPrev={r > 0} canNext={r < P.length - 1} onPrev={() => moveIn("partners", pt.id, -1)} onNext={() => moveIn("partners", pt.id, 1)} onRemove={() => removePartner(pt)} />
-                  </div>
-                  <button className={`mx-head ${head ? "" : "mx-head-empty"}`} onClick={(e) => openPicker(e, { mode: "partnerHead", pid: pt.id })}>
-                    {head ? (<><span className="mx-avatar mx-avatar-partner">{initials(head.name)}</span><span className="mx-head-text"><strong>{head.name}</strong><em>{head.title || "Head"}</em></span></>) : (<><UserPlus size={14} strokeWidth={1.7} /><span>Who heads it?</span></>)}
-                  </button>
-                </div>
-                {plan.map(({ g, cols, addCol }) => (
-                  <React.Fragment key={pt.id + g.id}>
-                    {cols.map(({ st, col: c }) => {
-                      const k = ck(pt.id, st.id); const has = (doc.cells[k] || []).length > 0;
-                      return (
-                        <div key={k} className={`mx-cell ${overKey === k ? "mx-cell-over" : ""} ${has ? "mx-cell-linked" : "mx-cell-empty"}`} style={{ gridColumn: c, gridRow: row, "--c": "#b8442a" }} {...dropProps(k)}>
-                          {renderChips(k, st.id, "#b8442a")}
-                          <button className="mx-add" onClick={(e) => openPicker(e, { mode: "cell", pid: pt.id, stId: st.id })} title={`Who from ${pt.label || "this part of the business"} works with ${st.name || "this subteam"}?`}><Plus size={14} strokeWidth={1.8} />{has ? "" : <span>Link</span>}</button>
-                        </div>
-                      );
-                    })}
-                    <div className="mx-fill" style={{ gridColumn: addCol, gridRow: row }} />
-                  </React.Fragment>
-                ))}
-                <div className="mx-fill" style={{ gridColumn: lastCol, gridRow: row }} />
-              </React.Fragment>
-            );
-          })}
-
-          <div className="mx-addrow" style={{ gridColumn: `1 / ${lastCol + 1}`, gridRow: R_ADD }}>
-            <button className="mx-addbtn" onClick={(e) => openPicker(e, { mode: "newPartner" })}><Plus size={15} strokeWidth={1.8} /> Add a relationship into the business</button>
-            <span className="mx-hint">{P.length === 0 ? "e.g. Account Mgmt (Ericka). Add as many as you need — then link each subteam to the ones it works with." : "A subteam can link to as many of these as it needs."}</span>
-          </div>
+          {body}
         </div>
       </div>
 
       {picker && <PeoplePicker ctx={pickerCtx} rect={picker.rect} source={source} onPick={onPick} onClose={() => setPicker(null)} />}
       {chipMenu && (() => {
         const chip = (doc.cells[chipMenu.key] || []).find((c) => c.id === chipMenu.chipId); if (!chip) return null;
-        const isMember = chipMenu.key.startsWith(MEM + "|");
         return (<ChipMenu chip={chip} p={person(chip.ref)} rect={chipMenu.rect} sourceName={source.name}
           onRole={(v) => setRole(chipMenu.key, chip.id, v)}
-          onLead={chip.ref && isMember ? () => { apply((d) => { const s = d.subteams.find((x) => x.id === chipMenu.stId); if (s) s.leadRef = chip.ref; return d; }); setChipMenu(null); } : null}
+          onLead={chip.ref ? () => { apply((d) => { const x = d.pods.find((y) => y.id === chipMenu.podId); if (x) x.leadRef = chip.ref; return d; }); setChipMenu(null); } : null}
           onRemove={() => { removeChip(chipMenu.key, chip.id); setChipMenu(null); }}
           onClose={() => setChipMenu(null)} />);
       })()}
@@ -468,31 +459,51 @@ function PeoplePicker({ ctx, rect, source, onPick, onClose }) {
   const [added, setAdded] = useState(() => new Set());
   const ql = q.trim().toLowerCase();
   const match = (p) => !ql || p.name.toLowerCase().includes(ql) || p.title.toLowerCase().includes(ql) || p.team.toLowerCase().includes(ql);
+  const usableP = (p) => p && p.name && !/^\?+$/.test(p.name);
   const org = useMemo(() => (ctx.anchor ? source.orgOf(ctx.anchor.id) : new Set()), [ctx.anchor, source]);
-  const usable = source.list.filter((p) => p.name && !/^\?+$/.test(p.name) && match(p));
-  const near = ctx.anchor ? usable.filter((p) => org.has(p.id)).slice(0, 40) : [];
-  const rest = ql ? usable.filter((p) => !org.has(p.id)).slice(0, 12) : [];
+  const isDone = (p) => added.has(p.id) || (ctx.taken && ctx.taken.has(p.id));
+  // the anchor's org, laid out the way it's actually organised: the head, then each of their
+  // direct reports' teams — so "engineers from one of Nick's teams" is a glance, not a search
+  const sections = useMemo(() => {
+    if (!ctx.anchor) return [];
+    const head = source.byId.get(ctx.anchor.id); const out = [];
+    const direct = source.kidsOf(ctx.anchor.id).map((id) => source.byId.get(id)).filter(usableP);
+    const solo = [head, ...direct.filter((d) => !source.kidsOf(d.id).length)].filter(usableP).filter(match);
+    if (solo.length) out.push({ key: "_solo", label: ctx.anchor.label, people: solo });
+    direct.filter((d) => source.kidsOf(d.id).length).forEach((d) => {
+      const people = [...source.orgOf(d.id)].map((id) => source.byId.get(id)).filter(usableP).filter(match);
+      if (people.length) out.push({ key: d.id, label: `${d.name}'s team`, sub: d.title, people, team: true });
+    });
+    return ctx.byTeam ? out : [{ key: "_all", label: ctx.anchor.label, people: out.flatMap((x) => x.people).slice(0, 40) }].filter((x) => x.people.length);
+  }, [ctx.anchor, ctx.byTeam, source, ql]); // eslint-disable-line
+  const rest = ql ? source.list.filter((p) => usableP(p) && match(p) && !org.has(p.id)).slice(0, 12) : [];
   const pick = (p) => { onPick({ ref: p.id, name: p.name }); if (ctx.multi) setAdded((s) => new Set(s).add(p.id)); };
-  const Row = ({ p }) => { const done = added.has(p.id) || (ctx.taken && ctx.taken.has(p.id)); return (
+  const addAll = (people) => { const todo = people.filter((p) => !isDone(p)); todo.forEach((p) => onPick({ ref: p.id, name: p.name })); setAdded((s) => { const n = new Set(s); todo.forEach((p) => n.add(p.id)); return n; }); };
+  const Row = ({ p }) => { const done = isDone(p); return (
     <button className={`pk-row ${done ? "pk-done" : ""}`} disabled={done} onClick={() => pick(p)}>
       <span className="mx-avatar pk-avatar">{initials(p.name)}</span>
       <span className="pk-text"><strong>{p.name}</strong><em>{[p.title, p.managerName && `↳ ${p.managerName}`].filter(Boolean).join(" · ")}</em></span>
       {done && <span className="pk-tick">added</span>}
     </button>); };
-  const pos = place(rect, 360, 430);
+  const pos = place(rect, 380, 460);
+  const nothing = !sections.length && !rest.length;
   return (<>
     <div className="pk-veil" onClick={onClose} />
-    <div className="pk" style={pos}>
+    <div className="pk" style={{ ...pos, width: 380 }}>
       <div className="pk-head"><span>{ctx.title}</span><button className="pk-x" onClick={onClose}>{ctx.multi ? "Done" : <X size={14} />}</button></div>
       <div className="pk-search"><Search size={14} strokeWidth={1.6} /><input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, title or team…"
-        onKeyDown={(e) => { if (e.key === "Enter") { const first = [...near, ...rest].find((p) => !added.has(p.id) && !(ctx.taken && ctx.taken.has(p.id))); if (first) { pick(first); setQ(""); } } }} /></div>
+        onKeyDown={(e) => { if (e.key === "Enter") { const first = [...sections.flatMap((x) => x.people), ...rest].find((p) => !isDone(p)); if (first) { pick(first); setQ(""); } } }} /></div>
       <div className="pk-list">
         {!source.ready && <div className="pk-empty">Loading people…</div>}
-        {near.length > 0 && <div className="pk-group">{ctx.anchor.label}</div>}
-        {near.map((p) => <Row key={p.id} p={p} />)}
+        {sections.map((sec) => (
+          <div key={sec.key}>
+            <div className="pk-group">{sec.label}{sec.team && ctx.multi && sec.people.some((p) => !isDone(p)) && <button className="pk-all" onClick={() => addAll(sec.people)}>add whole team ({sec.people.length})</button>}</div>
+            {sec.people.map((p) => <Row key={p.id} p={p} />)}
+          </div>
+        ))}
         {rest.length > 0 && <div className="pk-group">{ctx.anchor ? "Everyone else" : "People"}</div>}
         {rest.map((p) => <Row key={p.id} p={p} />)}
-        {source.ready && !near.length && !rest.length && <div className="pk-empty">{ql ? `No one matches “${q}”.` : ctx.hint || "Type a name to search the functional org."}</div>}
+        {source.ready && nothing && <div className="pk-empty">{ql ? `No one matches “${q}”.` : ctx.hint || "Type a name to search the functional org."}</div>}
         {ctx.allowPlaceholder && ql && (<button className="pk-row pk-ghost" onClick={() => { onPick({ ref: null, name: q.trim() }); setQ(""); }}><Plus size={14} /><span className="pk-text"><strong>{ctx.placeholderLabel ? ctx.placeholderLabel(q.trim()) : `Add “${q.trim()}” as an open role`}</strong><em>not linked to the functional org</em></span></button>)}
         {ctx.clearable && !ql && <button className="pk-row pk-ghost" onClick={() => onPick({ ref: null })}><X size={14} /><span className="pk-text"><strong>Clear</strong><em>leave it unassigned</em></span></button>}
       </div>
@@ -576,7 +587,7 @@ const mxStyles = `
 .mx-add-on { opacity: .7 !important; } .mx-add-on:hover { opacity: 1 !important; }
 .mx-addsub { background: #f3eee1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 10px 6px; text-align: center; }
 .mx-addbtn-sm { padding: 7px 11px; font-size: 12.5px; position: static; }
-.mx-cell-linked { background: color-mix(in srgb, #b8442a 4%, #fffdf8); }
+.mx-cell-linked { background: color-mix(in srgb, var(--c) 4%, #fffdf8); }
 .mx-cell { padding: 10px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 7px; min-height: 84px; background: #fffdf8; transition: background .12s, box-shadow .12s; }
 .mx-cell-over { background: color-mix(in srgb, var(--c) 9%, #fffdf8); box-shadow: inset 0 0 0 2px var(--c); }
 .mx-chip { display: flex; align-items: center; gap: 8px; max-width: 100%; text-align: left; padding: 5px 11px 5px 5px; border: 1px solid var(--line); border-radius: 999px; background: #fff; cursor: grab; font-family: inherit; color: var(--ink); transition: box-shadow .12s, border-color .12s, transform .12s; }
@@ -593,6 +604,26 @@ const mxStyles = `
 .mx-addbtn:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); border-style: solid; }
 .mx-hint { font-family: 'Iowan Old Style', Georgia, serif; font-size: 13px; font-style: italic; color: var(--ink-faint); }
 
+.mx-corner-add { align-self: flex-start; background: #fffdf7; }
+.mx-rescue { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding: 12px 14px; border: 1px solid #b8442a; border-radius: 10px; background: #fbeee9; font-family: 'Iowan Old Style', Georgia, serif; font-size: 13.5px; line-height: 1.5; }
+.mx-rescue > div { flex: 1; min-width: 280px; }
+.mx-pod { background: #fffdf7; padding: 14px 14px 12px; box-shadow: inset 0 3px 0 var(--ink); }
+.mx-pod:hover .mx-tools, .mx-rowhead:hover .mx-tools { opacity: 1; }
+.mx-bar { padding: 9px 0; background: #efe9da; }
+.mx-bar-in { position: sticky; left: 14px; display: inline-flex; align-items: center; gap: 14px; max-width: calc(100vw - 120px); }
+.mx-bar .mx-addbtn, .mx-corner .mx-addbtn { position: static; }
+.mx-bar-title { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10.5px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; color: var(--ink); white-space: nowrap; }
+.mx-bar-wide .mx-bar-title { color: #b8442a; }
+.mx-bar-blurb { font-family: 'Iowan Old Style', Georgia, serif; font-size: 12.5px; font-style: italic; color: var(--ink-faint); flex: 1; }
+.mx-emptyrow { padding: 16px 18px; background: #fbf8f0; font-family: 'Iowan Old Style', Georgia, serif; font-size: 13px; font-style: italic; color: var(--ink-faint); }
+.mx-rowhead { box-shadow: inset 4px 0 0 var(--c); padding-left: 18px !important; }
+.mx-cell { flex-direction: column; flex-wrap: nowrap; align-items: flex-start; gap: 8px; }
+.mx-chiprow { display: flex; flex-wrap: wrap; gap: 7px; }
+.mx-branch { width: 100%; }
+.mx-branch-label { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: color-mix(in srgb, var(--c) 75%, #000); margin: 2px 0 5px 2px; }
+.pk-group { display: flex; align-items: center; gap: 8px; }
+.pk-all { margin-left: auto; border: 1px solid var(--rule); background: transparent; border-radius: 999px; padding: 2px 9px; cursor: pointer; font-family: 'Iowan Old Style', Georgia, serif; font-size: 11px; font-style: italic; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-soft); }
+.pk-all:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .pk-veil { position: fixed; inset: 0; z-index: 80; }
 .pk { position: fixed; z-index: 81; width: 360px; display: flex; flex-direction: column; background: var(--paper); border: 1px solid var(--ink); border-radius: 12px; box-shadow: 0 24px 60px -18px rgba(26,22,18,.5); overflow: hidden; font-family: 'Iowan Old Style', Georgia, serif; }
 .pk-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 14px; font-size: 14px; font-weight: 600; border-bottom: 1px solid var(--rule); }
