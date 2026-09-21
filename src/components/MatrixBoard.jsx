@@ -5,49 +5,75 @@ import { sharedStyles } from "./styles.js";
 
 // ---------------------------------------------------------------------------------------------
 // Team matrix board.
-//   rows    = subteams of the team (each with an optional lead)
-//   columns = functions, each headed by a person from the functional org
-//   cells   = the people from that function who work with that subteam
-// People are references (`ref`) into a functional chart (doc.sourceChartId); names, titles and
-// managers are read live from it, so the board never goes stale. Stored in the chart's JSON:
-//   { id:"root", kind:"matrix", v:2, sourceChartId, leadRef,
-//     functions:[{id,label,headRef}], subteams:[{id,name,leadRef}],
-//     cells:{ "<subteamId>|<functionId>": [{id, ref, name, role}] } }
+//   across the top : the team's own leadership ("groups" — e.g. Nick · Engineering, Tali · Product)
+//                    and, under each, its subteams (e.g. Field Engineers) with their members
+//   down the left  : the other parts of the business those subteams work with ("partners" —
+//                    e.g. Ericka · Account Mgmt). A subteam can have as many as it needs.
+//   cells          : the people from that part of the business who work with that subteam
+// People are references (`ref`) into a functional chart (doc.sourceChartId), read live from it.
+//   { id:"root", kind:"matrix", v:3, sourceChartId, leadRef,
+//     groups:[{id,label,headRef}], subteams:[{id,groupId,name,leadRef}],
+//     partners:[{id,label,headRef}],
+//     cells:{ "<partnerId>|<subteamId>":[chip], "_m|<subteamId>":[chip] /* members */ } }
+//   chip = { id, ref, name, role }
 // ---------------------------------------------------------------------------------------------
 
 const rid = () => Math.random().toString(36).slice(2, 10);
 const clone = (x) => JSON.parse(JSON.stringify(x));
-const cellKey = (sid, fid) => `${sid}|${fid}`;
-const COLORS = ["#3b6ea5", "#6d5aa8", "#b8442a", "#5b7a3f", "#b07d2a", "#2f7f86", "#a0527a", "#6b6252"];
+const MEM = "_m";
+const ck = (rowId, stId) => `${rowId}|${stId}`;
+const COLORS = ["#3b6ea5", "#6d5aa8", "#2f7f86", "#5b7a3f", "#b07d2a", "#a0527a", "#6b6252"];
 const fnLabelFrom = (p) => {
   if (!p) return "";
   const t = (p.title || "").replace(/^\s*(chief|s?e?vp|svp|evp|vp|vice president|head|director|lead|manager|gm|general manager)\b[\s,]*(of\s+)?/i, "").trim();
   return t || p.team || p.title || "";
 };
 const initials = (name) => (name || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0] || "").join("").toUpperCase() || "?";
+const sameish = (a, b) => {
+  const fa = (a || "").trim().toLowerCase().split(/\s+/)[0] || "", fb = (b || "").trim().toLowerCase().split(/\s+/)[0] || "";
+  return !!fa && !!fb && (fa === fb || fa.startsWith(fb) || fb.startsWith(fa) || (fa.length >= 3 && fa.slice(0, 3) === fb.slice(0, 3)));
+};
 
-// First-generation matrices were trees of sections. Carry them over: sections → subteams,
-// everyone inside → a single "Core team" column. `_automatch` asks the board to link subteams
-// that were named after a person to that person (as lead) once the source org has loaded.
-const toV2 = (tree) => {
-  if (tree && tree.v === 2) return { doc: tree, migrated: false };
+// gen-1 (tree of sections) → gen-2 shape, so there is a single upgrade path below
+const v1toV2 = (tree) => {
   const core = { id: rid(), label: "Core team", headRef: null };
   const subteams = [], cells = {};
   ((tree && tree.children) || []).forEach((sec) => {
-    const sid = rid();
-    subteams.push({ id: sid, name: (sec.name || "Subteam").trim(), leadRef: null });
+    const sid = rid(); subteams.push({ id: sid, name: (sec.name || "").trim(), leadRef: null });
     const chips = [];
-    const rec = (n) => (n.children || []).forEach((c) => {
-      const placeholder = !c.ref && (!c.name || c.name === "New Person");
-      if (!placeholder) chips.push({ id: rid(), ref: c.ref || null, name: c.name || "", role: c.ref && c.title && c.title !== c.refTitle ? c.title : "" });
-      rec(c);
-    });
-    rec(sec);
-    if (chips.length) cells[cellKey(sid, core.id)] = chips;
+    const rec = (n) => (n.children || []).forEach((c) => { if (c.ref || (c.name && c.name !== "New Person")) chips.push({ id: rid(), ref: c.ref || null, name: c.name || "", role: "" }); rec(c); });
+    rec(sec); if (chips.length) cells[`${sid}|${core.id}`] = chips;
   });
-  const doc = { id: "root", kind: "matrix", v: 2, sourceChartId: tree?.sourceChartId || null, leadRef: null,
-    functions: [core], subteams, cells, children: [], _automatch: true };
-  if (tree && tree.archived) doc.archived = tree.archived;
+  return { v: 2, sourceChartId: tree?.sourceChartId || null, archived: tree?.archived, leadRef: null, functions: [core], subteams, cells };
+};
+
+// Upgrade older boards. Gen-2 had functions across the top and subteams down the side; the top
+// stays the top. With nothing placed yet, headed functions and person-named rows were really the
+// team's leadership → they become groups. If people were already placed, keep their structure.
+const toV3 = (raw, source) => {
+  if (raw && raw.v === 3) return { doc: raw, migrated: false };
+  const t = raw && raw.v === 2 ? raw : v1toV2(raw || {});
+  const groups = [], subteams = [], partners = [], cells = {};
+  const hasPeople = Object.values(t.cells || {}).some((a) => a && a.length);
+  if (!hasPeople) {
+    (t.functions || []).forEach((f) => { if (f.headRef) groups.push({ id: f.id, label: f.label || "", headRef: f.headRef }); });
+    (t.subteams || []).forEach((st) => {
+      const nm = (st.name || "").trim(); if (!nm && !st.leadRef) return;
+      const lead = st.leadRef || (source.list.find((p) => p.name.toLowerCase() === nm.toLowerCase()) || {}).id || null;
+      if (lead) { if (!groups.some((g) => g.headRef === lead)) groups.push({ id: st.id, label: fnLabelFrom(source.byId.get(lead)) || nm, headRef: lead }); return; }
+      if (groups.some((g) => sameish(nm, source.byId.get(g.headRef)?.name))) return; // same person, other spelling
+      groups.push({ id: st.id, label: nm, headRef: null });
+    });
+  } else {
+    const g = { id: rid(), label: "Team", headRef: t.leadRef || null }; groups.push(g);
+    (t.subteams || []).forEach((st) => subteams.push({ id: st.id, groupId: g.id, name: st.name || "", leadRef: st.leadRef || null }));
+    (t.functions || []).forEach((f) => {
+      if (f.headRef) partners.push({ id: f.id, label: f.label || "", headRef: f.headRef });
+      (t.subteams || []).forEach((st) => { const chips = (t.cells || {})[`${st.id}|${f.id}`]; if (chips && chips.length) { const k = ck(f.headRef ? f.id : MEM, st.id); cells[k] = [...(cells[k] || []), ...chips]; } });
+    });
+  }
+  const doc = { id: "root", kind: "matrix", v: 3, sourceChartId: t.sourceChartId || null, leadRef: t.leadRef || null, groups, subteams, partners, cells, children: [] };
+  if (t.archived) doc.archived = t.archived;
   return { doc, migrated: true };
 };
 
@@ -65,18 +91,29 @@ const buildSource = (tree) => {
   const orgOf = (id) => { const out = new Set(); const go = (x) => { if (out.has(x)) return; out.add(x); (kids.get(x) || []).forEach(go); }; if (id) go(id); return out; };
   return { list, byId, orgOf };
 };
+const EMPTY_SOURCE = { list: [], byId: new Map(), orgOf: () => new Set(), name: "", ready: false };
+
+// small move/remove toolbar shown on hover (module-level so it isn't remounted every render)
+const Tools = ({ onPrev, onNext, onRemove, prevIcon, nextIcon, canPrev, canNext, what }) => (
+  <div className="mx-tools">
+    <button className="mx-tool" disabled={!canPrev} onClick={onPrev} title="Move">{prevIcon}</button>
+    <button className="mx-tool" disabled={!canNext} onClick={onNext} title="Move">{nextIcon}</button>
+    <button className="mx-tool mx-tool-danger" onClick={onRemove} title={`Remove ${what}`}><Trash2 size={13} /></button>
+  </div>
+);
 
 export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   const [doc, setDocState] = useState(null);
+  const [raw, setRaw] = useState(null);           // an older-format board waiting for the org to load before upgrading
   const [name, setName] = useState(chartName || "");
   const [editingName, setEditingName] = useState(false);
   const [history, setHistory] = useState([]);
   const [saveStatus, setSaveStatus] = useState("synced");
   const [loadError, setLoadError] = useState(null);
-  const [source, setSource] = useState({ list: [], byId: new Map(), orgOf: () => new Set(), name: "", ready: false });
-  const [picker, setPicker] = useState(null);   // { mode, sid?, fid?, rect }
-  const [chipMenu, setChipMenu] = useState(null); // { sid, fid, chipId, rect }
-  const [editing, setEditing] = useState(null);   // { type:"sub"|"fn", id } — inline rename
+  const [source, setSource] = useState(EMPTY_SOURCE);
+  const [picker, setPicker] = useState(null);     // { mode, stId?, pid?, gid?, rect }
+  const [chipMenu, setChipMenu] = useState(null); // { key, chipId, stId, rect }
+  const [editing, setEditing] = useState(null);   // { type:"group"|"sub"|"partner", id }
   const [drag, setDrag] = useState(null);         // { key, chipId }
   const [overKey, setOverKey] = useState(null);
   const docRef = useRef(null);
@@ -91,7 +128,7 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       const updates = { updated_at: new Date().toISOString() };
-      if (nextDoc !== undefined) { const { _automatch, ...clean } = nextDoc; updates.tree = clean; }
+      if (nextDoc !== undefined) updates.tree = nextDoc;
       if (nextName !== undefined) updates.name = nextName;
       lastSavedAt.current = Date.now();
       const { data, error } = await supabase.from("charts").update(updates).eq("id", chartId).select("updated_at").single();
@@ -113,10 +150,8 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
       const { data, error } = await supabase.from("charts").select("id, name, tree, updated_at").eq("id", chartId).single();
       if (cancelled) return;
       if (error) { setLoadError(error.message); return; }
-      setName(data.name);
-      lastRemoteAt.current = new Date(data.updated_at).getTime();
-      const { doc: d, migrated } = toV2(data.tree);
-      setDoc(d, { save: migrated });
+      setName(data.name); lastRemoteAt.current = new Date(data.updated_at).getTime();
+      if (data.tree && data.tree.v === 3) setDoc(data.tree, { save: false }); else setRaw(data.tree || {});
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -130,35 +165,34 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
         if (Math.abs(ts - lastSavedAt.current) < 3000 || ts <= lastRemoteAt.current) return;
         if (dirty.current || saveTimer.current) return;
         lastRemoteAt.current = ts;
-        setDoc(toV2(payload.new.tree).doc, { save: false }); setName(payload.new.name);
+        if (payload.new.tree && payload.new.tree.v === 3) setDoc(payload.new.tree, { save: false });
+        setName(payload.new.name);
       }).subscribe();
     return () => { supabase.removeChannel(ch); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartId]);
 
   // ---- the functional org these people come from -------------------------------------------
-  const sourceChartId = doc?.sourceChartId || null;
+  const sourceChartId = doc?.sourceChartId || raw?.sourceChartId || null;
   useEffect(() => {
     if (!sourceChartId) return;
     let cancelled = false;
     (async () => {
       const { data, error } = await supabase.from("charts").select("name, tree").eq("id", sourceChartId).single();
-      if (cancelled || error || !data) return;
+      if (cancelled) return;
+      if (error || !data) { setSource({ ...EMPTY_SOURCE, ready: true }); return; }
       setSource({ ...buildSource(data.tree), name: data.name, ready: true });
     })();
     return () => { cancelled = true; };
   }, [sourceChartId]);
 
-  // carried-over matrices: a subteam named after a person becomes led by that person
+  // older boards are upgraded once the org is known (the upgrade reads people's names from it)
   useEffect(() => {
-    const d = docRef.current;
-    if (!d || !d._automatch || !source.ready) return;
-    const next = clone(d); delete next._automatch;
-    const byName = new Map(source.list.map((p) => [p.name.toLowerCase(), p]));
-    next.subteams.forEach((st) => { const hit = !st.leadRef && byName.get((st.name || "").trim().toLowerCase()); if (hit) st.leadRef = hit.id; });
-    setDoc(next);
+    if (!raw || doc) return;
+    if (raw.sourceChartId && !source.ready) return;
+    setDoc(toV3(raw, source).doc); setRaw(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, source.ready]);
+  }, [raw, source.ready]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -178,52 +212,102 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   const openPicker = (e, p) => { const r = e.currentTarget.getBoundingClientRect(); setChipMenu(null); setPicker({ ...p, rect: { left: r.left, top: r.top, bottom: r.bottom } }); };
 
   // ---- actions ------------------------------------------------------------------------------
-  const addSubteam = () => { const id = rid(); apply((d) => { d.subteams.push({ id, name: "", leadRef: null }); return d; }); setEditing({ type: "sub", id }); };
-  const addFunction = (headRef, label) => { const id = rid(); apply((d) => { d.functions.push({ id, label: label || "", headRef: headRef || null }); return d; }); setEditing({ type: "fn", id }); };
-  const renameSub = (id, v) => apply((d) => { const s = d.subteams.find((x) => x.id === id); if (s) s.name = v.trim(); return d; });
-  const renameFn = (id, v) => apply((d) => { const f = d.functions.find((x) => x.id === id); if (f) f.label = v.trim(); return d; });
-  const move = (arrKey, id, delta) => apply((d) => { const a = d[arrKey]; const i = a.findIndex((x) => x.id === id); const j = i + delta; if (i < 0 || j < 0 || j >= a.length) return d; const [x] = a.splice(i, 1); a.splice(j, 0, x); return d; });
-  const countIn = (pred) => Object.entries(doc.cells || {}).reduce((n, [k, v]) => n + (pred(k) ? v.length : 0), 0);
-  const removeSub = (st) => { const n = countIn((k) => k.startsWith(st.id + "|")); if (n && !window.confirm(`Remove "${st.name || "this subteam"}" and the ${n} ${n === 1 ? "person" : "people"} placed in it?`)) return; apply((d) => { d.subteams = d.subteams.filter((x) => x.id !== st.id); Object.keys(d.cells).forEach((k) => { if (k.startsWith(st.id + "|")) delete d.cells[k]; }); return d; }); };
-  const removeFn = (f) => { const n = countIn((k) => k.endsWith("|" + f.id)); if (n && !window.confirm(`Remove the "${f.label || "function"}" column and the ${n} ${n === 1 ? "person" : "people"} placed in it?`)) return; apply((d) => { d.functions = d.functions.filter((x) => x.id !== f.id); Object.keys(d.cells).forEach((k) => { if (k.endsWith("|" + f.id)) delete d.cells[k]; }); return d; }); };
-  const addToCell = (sid, fid, pick) => apply((d) => { const k = cellKey(sid, fid); const arr = d.cells[k] || (d.cells[k] = []); if (pick.ref && arr.some((c) => c.ref === pick.ref)) return d; arr.push({ id: rid(), ref: pick.ref || null, name: pick.name || "", role: "" }); return d; });
-  const removeChip = (sid, fid, chipId) => apply((d) => { const k = cellKey(sid, fid); d.cells[k] = (d.cells[k] || []).filter((c) => c.id !== chipId); if (!d.cells[k].length) delete d.cells[k]; return d; });
-  const setRole = (sid, fid, chipId, role) => apply((d) => { const c = (d.cells[cellKey(sid, fid)] || []).find((x) => x.id === chipId); if (c) c.role = role; return d; });
+  const dropCells = (d, pred) => Object.keys(d.cells).forEach((k) => { if (pred(k)) delete d.cells[k]; });
+  const peopleIn = (pred) => Object.entries(doc.cells || {}).reduce((n, [k, v]) => n + (pred(k) ? v.length : 0), 0);
+  const confirmLoss = (what, n) => !n || window.confirm(`Remove ${what} and the ${n} ${n === 1 ? "person" : "people"} placed in it?`);
+
+  const addGroup = (headRef, label) => { const id = rid(); apply((d) => { d.groups.push({ id, label: label || "", headRef: headRef || null }); return d; }); setEditing({ type: "group", id }); };
+  const addPartner = (headRef, label) => { const id = rid(); apply((d) => { d.partners.push({ id, label: label || "", headRef: headRef || null }); return d; }); setEditing({ type: "partner", id }); };
+  const addSubteam = (groupId) => { const id = rid(); apply((d) => { d.subteams.push({ id, groupId, name: "", leadRef: null }); return d; }); setEditing({ type: "sub", id }); };
+  const rename = (arr, id, field, v) => apply((d) => { const x = d[arr].find((y) => y.id === id); if (x) x[field] = v.trim(); return d; });
+  const moveIn = (arr, id, delta, sameGroup) => apply((d) => {
+    const a = d[arr]; const i = a.findIndex((x) => x.id === id); if (i < 0) return d;
+    let j = i + delta;
+    if (sameGroup) { while (j >= 0 && j < a.length && a[j].groupId !== a[i].groupId) j += delta; }
+    if (j < 0 || j >= a.length) return d;
+    const [x] = a.splice(i, 1); a.splice(j, 0, x); return d;
+  });
+  const removeGroup = (g) => { const sts = doc.subteams.filter((s) => s.groupId === g.id).map((s) => s.id); const n = peopleIn((k) => sts.includes(k.split("|")[1]));
+    if (!confirmLoss(`"${g.label || displayName(g.headRef, "this team")}"${sts.length ? ` with its ${sts.length} subteam${sts.length === 1 ? "" : "s"}` : ""}`, n)) return;
+    apply((d) => { d.groups = d.groups.filter((x) => x.id !== g.id); d.subteams = d.subteams.filter((s) => s.groupId !== g.id); dropCells(d, (k) => sts.includes(k.split("|")[1])); return d; }); };
+  const removeSub = (st) => { const n = peopleIn((k) => k.split("|")[1] === st.id); if (!confirmLoss(`"${st.name || "this subteam"}"`, n)) return;
+    apply((d) => { d.subteams = d.subteams.filter((x) => x.id !== st.id); dropCells(d, (k) => k.split("|")[1] === st.id); return d; }); };
+  const removePartner = (pt) => { const n = peopleIn((k) => k.split("|")[0] === pt.id); if (!confirmLoss(`the "${pt.label || "relationship"}" row`, n)) return;
+    apply((d) => { d.partners = d.partners.filter((x) => x.id !== pt.id); dropCells(d, (k) => k.split("|")[0] === pt.id); return d; }); };
+  const addTo = (key, pick) => apply((d) => { const arr = d.cells[key] || (d.cells[key] = []); if (pick.ref && arr.some((c) => c.ref === pick.ref)) return d; arr.push({ id: rid(), ref: pick.ref || null, name: pick.name || "", role: "" }); return d; });
+  const removeChip = (key, chipId) => apply((d) => { d.cells[key] = (d.cells[key] || []).filter((c) => c.id !== chipId); if (!d.cells[key].length) delete d.cells[key]; return d; });
+  const setRole = (key, chipId, role) => apply((d) => { const c = (d.cells[key] || []).find((x) => x.id === chipId); if (c) c.role = role; return d; });
   const moveChip = (fromKey, chipId, toKey) => { if (fromKey === toKey) return; apply((d) => { const from = d.cells[fromKey] || []; const chip = from.find((c) => c.id === chipId); if (!chip) return d; const to = d.cells[toKey] || (d.cells[toKey] = []); if (chip.ref && to.some((c) => c.ref === chip.ref)) return d; d.cells[fromKey] = from.filter((c) => c.id !== chipId); if (!d.cells[fromKey].length) delete d.cells[fromKey]; to.push(chip); return d; }); };
 
   const onPick = (pick) => {
     const p = picker; if (!p) return;
-    if (p.mode === "cell") { addToCell(p.sid, p.fid, pick); return; } // stays open — add several in a row
-    if (p.mode === "newFn") addFunction(pick.ref, pick.ref ? fnLabelFrom(person(pick.ref)) : pick.name);
-    if (p.mode === "fnHead") apply((d) => { const f = d.functions.find((x) => x.id === p.fid); if (f) f.headRef = pick.ref || null; return d; });
-    if (p.mode === "subLead") apply((d) => { const s = d.subteams.find((x) => x.id === p.sid); if (s) s.leadRef = pick.ref || null; return d; });
+    if (p.mode === "members") { addTo(ck(MEM, p.stId), pick); return; }        // stays open — add several
+    if (p.mode === "cell") { addTo(ck(p.pid, p.stId), pick); return; }
+    const setRef = (arr, id, field) => apply((d) => { const x = d[arr].find((y) => y.id === id); if (x) x[field] = pick.ref || null; return d; });
+    if (p.mode === "newGroup") addGroup(pick.ref, pick.ref ? fnLabelFrom(person(pick.ref)) : pick.name);
+    if (p.mode === "newPartner") addPartner(pick.ref, pick.ref ? fnLabelFrom(person(pick.ref)) : pick.name);
+    if (p.mode === "groupHead") setRef("groups", p.gid, "headRef");
+    if (p.mode === "partnerHead") setRef("partners", p.pid, "headRef");
+    if (p.mode === "subLead") setRef("subteams", p.stId, "leadRef");
     if (p.mode === "teamLead") apply((d) => { d.leadRef = pick.ref || null; return d; });
     setPicker(null);
   };
 
   const stats = useMemo(() => {
-    if (!doc) return { people: 0, placements: 0 };
-    const refs = new Set(); let placements = 0;
-    Object.values(doc.cells || {}).forEach((arr) => arr.forEach((c) => { placements++; refs.add(c.ref || c.id); }));
-    return { people: refs.size, placements };
+    if (!doc) return { people: 0, links: 0 };
+    const refs = new Set(); let links = 0;
+    Object.entries(doc.cells || {}).forEach(([k, arr]) => { if (!k.startsWith(MEM + "|") && arr.length) links++; arr.forEach((c) => refs.add(c.ref || c.id)); });
+    return { people: refs.size, links };
   }, [doc]);
 
   if (loadError) return (<div className="org-root"><style>{sharedStyles}</style><button className="tb" onClick={onBack}>← Back</button><p style={{ marginTop: 24 }}>Couldn't load this team: {loadError}</p></div>);
   if (!doc) return <div style={{ padding: 60, fontFamily: "Iowan Old Style, Georgia, serif", color: "#8a7d6c" }}>Loading…</div>;
 
-  const F = doc.functions, S = doc.subteams;
+  const G = doc.groups, S = doc.subteams, P = doc.partners;
+  // column plan: col 1 = the left rail; then per group its subteam columns + a slim "add subteam" column; last = "add team"
+  const plan = []; let col = 2; const tracks = ["252px"];
+  G.forEach((g, gi) => {
+    const sts = S.filter((s) => s.groupId === g.id); const start = col;
+    const cols = sts.map((st) => { tracks.push("minmax(250px, 1fr)"); return { st, col: col++ }; });
+    tracks.push(sts.length ? "124px" : "250px"); const addCol = col++;
+    plan.push({ g, gi, start, end: col, cols, addCol, color: COLORS[gi % COLORS.length] });
+  });
+  tracks.push("200px"); const lastCol = col;
+  const R_GROUP = 1, R_SUB = 2, R_P0 = 3, R_ADD = 3 + P.length;
+  const relCount = (stId) => P.filter((pt) => (doc.cells[ck(pt.id, stId)] || []).length).length;
+
+  const renderChips = (k, stId, color) => (doc.cells[k] || []).map((c) => {
+    const p = person(c.ref); const missing = c.ref && source.ready && !p;
+    return (
+      <button key={c.id} className={`mx-chip ${!c.ref ? "mx-chip-open" : ""} ${missing ? "mx-chip-missing" : ""} ${drag?.chipId === c.id ? "mx-chip-drag" : ""}`} style={{ "--c": color }}
+        draggable onDragStart={(e) => { setDrag({ key: k, chipId: c.id }); if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); } }}
+        onDragEnd={() => { setDrag(null); setOverKey(null); }}
+        onClick={(e) => { const rc = e.currentTarget.getBoundingClientRect(); setPicker(null); setChipMenu({ key: k, chipId: c.id, stId, rect: { left: rc.left, top: rc.top, bottom: rc.bottom } }); }}
+        title={p ? `${p.title || "—"} · reports to ${p.managerName || "—"}` : missing ? `No longer in ${source.name}` : "Open role / not in the org"}>
+        <span className="mx-avatar" style={c.ref ? { background: color } : undefined}>{c.ref ? initials(p?.name || c.name) : "?"}</span>
+        <span className="mx-chip-text"><strong>{p?.name || c.name || "Open role"}</strong><em>{c.role || p?.title || (c.ref ? "" : "open role")}</em></span>
+      </button>
+    );
+  });
+  const dropProps = (k) => ({
+    onDragOver: (e) => { if (!drag) return; e.preventDefault(); if (overKey !== k) setOverKey(k); },
+    onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOverKey(null); },
+    onDrop: (e) => { e.preventDefault(); if (drag) moveChip(drag.key, drag.chipId, k); setDrag(null); setOverKey(null); },
+  });
+
   const pickerCtx = picker && (() => {
-    const fn = F.find((f) => f.id === picker.fid), st = S.find((s) => s.id === picker.sid);
-    if (picker.mode === "cell") {
-      const anchor = fn?.headRef ? { id: fn.headRef, label: `${displayName(fn.headRef)}'s org` } : st?.leadRef ? { id: st.leadRef, label: `${displayName(st.leadRef)}'s org` } : null;
-      const taken = new Set((doc.cells[cellKey(picker.sid, picker.fid)] || []).map((c) => c.ref).filter(Boolean));
-      return { title: `Add to ${st?.name || "subteam"} · ${fn?.label || "function"}`, anchor, taken, multi: true, allowPlaceholder: true };
-    }
-    if (picker.mode === "newFn") return { title: "Who heads this function?", hint: "Pick the person who leads it — or type a name for the function and add it without a head.", allowPlaceholder: true, placeholderLabel: (q) => `Add “${q}” as a function with no head yet` };
-    if (picker.mode === "fnHead") return { title: `Who heads ${fn?.label || "this function"}?`, clearable: !!fn?.headRef };
-    if (picker.mode === "subLead") return { title: `Who leads ${st?.name || "this subteam"}?`, clearable: !!st?.leadRef };
+    const st = S.find((s) => s.id === picker.stId), pt = P.find((x) => x.id === picker.pid), g = G.find((x) => x.id === (picker.gid || st?.groupId));
+    const org = (ref) => (ref ? { id: ref, label: `${displayName(ref)}'s org` } : null);
+    if (picker.mode === "members") return { title: `Who's in ${st?.name || "this subteam"}?`, anchor: org(g?.headRef) || org(st?.leadRef), taken: new Set((doc.cells[ck(MEM, picker.stId)] || []).map((c) => c.ref).filter(Boolean)), multi: true, allowPlaceholder: true };
+    if (picker.mode === "cell") return { title: `${pt?.label || "This part of the business"} → ${st?.name || "subteam"}`, anchor: org(pt?.headRef), taken: new Set((doc.cells[ck(picker.pid, picker.stId)] || []).map((c) => c.ref).filter(Boolean)), multi: true, allowPlaceholder: true };
+    if (picker.mode === "newGroup") return { title: `Who leads this part of ${name || "the team"}?`, hint: "Pick the leader — e.g. the head of engineering or product for this team. Or type a name for the area and add it without a leader.", allowPlaceholder: true, placeholderLabel: (q) => `Add “${q}” with no leader yet` };
+    if (picker.mode === "newPartner") return { title: "Which part of the business do they work with?", hint: "Pick who heads it — e.g. the head of account management. Or type a name and add it without a head.", allowPlaceholder: true, placeholderLabel: (q) => `Add “${q}” with no head yet` };
+    if (picker.mode === "groupHead") return { title: `Who leads ${g?.label || "this"}?`, clearable: !!g?.headRef };
+    if (picker.mode === "partnerHead") return { title: `Who heads ${pt?.label || "this"}?`, clearable: !!pt?.headRef };
+    if (picker.mode === "subLead") return { title: `Who leads ${st?.name || "this subteam"}?`, anchor: org(g?.headRef), clearable: !!st?.leadRef };
     return { title: "Who leads the team?", clearable: !!doc.leadRef };
   })();
+
 
   return (
     <div className="org-root mx-root">
@@ -243,102 +327,116 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
           {doc.leadRef ? (<span><strong>{displayName(doc.leadRef)}</strong><em>{person(doc.leadRef)?.title || "Team lead"}</em></span>) : <span><strong>Set team lead</strong><em>who runs {name || "this team"}?</em></span>}
         </button>
         <div className="mx-spacer" />
-        <div className="mx-stats">
-          <span><strong>{S.length}</strong> subteams</span><span><strong>{F.length}</strong> functions</span><span><strong>{stats.people}</strong> people</span>
-        </div>
+        <div className="mx-stats"><span><strong>{S.length}</strong> subteams</span><span><strong>{stats.links}</strong> relationships</span><span><strong>{stats.people}</strong> people</span></div>
         <button className="tb" onClick={undo} disabled={!history.length} title="Undo (⌘Z)"><RotateCcw size={14} strokeWidth={1.5} /> Undo</button>
         <div className={`mx-save mx-save-${saveStatus}`}>{saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save error" : "Saved"}</div>
       </header>
 
       <div className="mx-sub">
-        People come from <strong>{source.name || "your functional org"}</strong> — their reporting line stays there. This board shows who works with which subteam.
+        Across the top: <strong>{name || "the team"}'s leadership and their subteams</strong>. Down the side: <strong>the parts of the business they work with</strong> — as many as each subteam needs. People come from <strong>{source.name || "your functional org"}</strong>; their reporting line stays there.
       </div>
 
       <div className="mx-scroll">
-        <div className="mx-grid" style={{ gridTemplateColumns: `248px repeat(${F.length}, minmax(236px, 1fr)) 190px` }}>
-          <div className="mx-corner"><span className="mx-axis mx-axis-col">Functions →</span><span className="mx-axis mx-axis-row">Subteams ↓</span></div>
+        <div className="mx-grid" style={{ gridTemplateColumns: tracks.join(" ") }}>
+          <div className="mx-corner" style={{ gridColumn: 1, gridRow: `${R_GROUP} / span 2` }}>
+            <span className="mx-axis mx-axis-col">Leadership → subteams</span>
+            <span className="mx-axis mx-axis-row">Works with ↓</span>
+          </div>
 
-          {F.map((f, i) => {
-            const head = person(f.headRef); const color = COLORS[i % COLORS.length];
+          {plan.map(({ g, gi, start, end, color }) => {
+            const head = person(g.headRef);
             return (
-              <div className="mx-fn" key={f.id} style={{ "--c": color }}>
+              <div className="mx-group" key={g.id} style={{ gridColumn: `${start} / ${end}`, gridRow: R_GROUP, "--c": color }}>
                 <div className="mx-fn-bar" />
-                <div className="mx-fn-row">
-                  <InlineEdit className="mx-fn-label" value={f.label} placeholder="Name this function" autoEdit={editing?.type === "fn" && editing.id === f.id} onDone={() => setEditing(null)} onCommit={(v) => renameFn(f.id, v)} />
-                  <div className="mx-tools">
-                    <button className="mx-tool" disabled={i === 0} onClick={() => move("functions", f.id, -1)} title="Move left"><ChevronLeft size={13} /></button>
-                    <button className="mx-tool" disabled={i === F.length - 1} onClick={() => move("functions", f.id, 1)} title="Move right"><ChevronRight size={13} /></button>
-                    <button className="mx-tool mx-tool-danger" onClick={() => removeFn(f)} title="Remove this function"><Trash2 size={13} /></button>
-                  </div>
+                <div className="mx-group-row">
+                  <InlineEdit className="mx-group-label" value={g.label} placeholder="Name this area" autoEdit={editing?.type === "group" && editing.id === g.id} onDone={() => setEditing(null)} onCommit={(v) => rename("groups", g.id, "label", v)} />
+                  <Tools what="this team and its subteams" prevIcon={<ChevronLeft size={13} />} nextIcon={<ChevronRight size={13} />} canPrev={gi > 0} canNext={gi < G.length - 1} onPrev={() => moveIn("groups", g.id, -1)} onNext={() => moveIn("groups", g.id, 1)} onRemove={() => removeGroup(g)} />
                 </div>
-                <button className={`mx-head ${head ? "" : "mx-head-empty"}`} onClick={(e) => openPicker(e, { mode: "fnHead", fid: f.id })}>
-                  {head ? (<><span className="mx-avatar" style={{ background: color }}>{initials(head.name)}</span><span className="mx-head-text"><strong>{head.name}</strong><em>{head.title || "Head"}</em></span></>) : (<><UserPlus size={14} strokeWidth={1.7} /><span>Who heads it?</span></>)}
+                <button className={`mx-head mx-head-inline ${head ? "" : "mx-head-empty"}`} onClick={(e) => openPicker(e, { mode: "groupHead", gid: g.id })}>
+                  {head ? (<><span className="mx-avatar mx-avatar-lg" style={{ background: color }}>{initials(head.name)}</span><span className="mx-head-text"><strong>{head.name}</strong><em>{head.title || "Leader"}</em></span></>) : (<><UserPlus size={14} strokeWidth={1.7} /><span>Who leads it?</span></>)}
                 </button>
               </div>
             );
           })}
+          <div className="mx-addfn" style={{ gridColumn: lastCol, gridRow: `${R_GROUP} / span 2` }}>
+            <button className="mx-addbtn" onClick={(e) => openPicker(e, { mode: "newGroup" })}><Plus size={15} strokeWidth={1.8} /> Add a leader's team</button>
+            {G.length === 0 && <span className="mx-hint">Start here — e.g. Nick (Engineering), Tali (Product).</span>}
+          </div>
 
-          <div className="mx-addfn"><button className="mx-addbtn" onClick={(e) => openPicker(e, { mode: "newFn" })}><Plus size={15} strokeWidth={1.8} /> Add function</button></div>
-
-          {S.map((st, r) => (
-            <React.Fragment key={st.id}>
-              <div className="mx-rowhead">
-                <div className="mx-fn-row">
-                  <InlineEdit className="mx-sub-name" value={st.name} placeholder="Name this subteam" autoEdit={editing?.type === "sub" && editing.id === st.id} onDone={() => setEditing(null)} onCommit={(v) => renameSub(st.id, v)} />
-                  <div className="mx-tools">
-                    <button className="mx-tool" disabled={r === 0} onClick={() => move("subteams", st.id, -1)} title="Move up"><ChevronUp size={13} /></button>
-                    <button className="mx-tool" disabled={r === S.length - 1} onClick={() => move("subteams", st.id, 1)} title="Move down"><ChevronDown size={13} /></button>
-                    <button className="mx-tool mx-tool-danger" onClick={() => removeSub(st)} title="Remove this subteam"><Trash2 size={13} /></button>
-                  </div>
-                </div>
-                <button className={`mx-sublead ${st.leadRef ? "" : "mx-head-empty"}`} onClick={(e) => openPicker(e, { mode: "subLead", sid: st.id })}>
-                  {st.leadRef ? (<><Crown size={12} strokeWidth={1.8} /><span><strong>{displayName(st.leadRef)}</strong> leads</span></>) : (<><UserPlus size={13} strokeWidth={1.7} /><span>Add a lead</span></>)}
-                </button>
-              </div>
-
-              {F.map((f, i) => {
-                const k = cellKey(st.id, f.id); const chips = doc.cells[k] || []; const color = COLORS[i % COLORS.length];
+          {plan.map(({ g, cols, addCol, color }) => (
+            <React.Fragment key={g.id + "-subs"}>
+              {cols.map(({ st, col: c }, i) => {
+                const k = ck(MEM, st.id); const n = relCount(st.id);
                 return (
-                  <div key={k} className={`mx-cell ${overKey === k ? "mx-cell-over" : ""} ${chips.length ? "" : "mx-cell-empty"}`} style={{ "--c": color }}
-                    onDragOver={(e) => { if (!drag) return; e.preventDefault(); if (overKey !== k) setOverKey(k); }}
-                    onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOverKey(null); }}
-                    onDrop={(e) => { e.preventDefault(); if (drag) moveChip(drag.key, drag.chipId, k); setDrag(null); setOverKey(null); }}>
-                    {chips.map((c) => {
-                      const p = person(c.ref); const missing = c.ref && source.ready && !p;
-                      return (
-                        <button key={c.id} className={`mx-chip ${!c.ref ? "mx-chip-open" : ""} ${missing ? "mx-chip-missing" : ""} ${drag?.chipId === c.id ? "mx-chip-drag" : ""}`}
-                          draggable onDragStart={(e) => { setDrag({ key: k, chipId: c.id }); if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); } }}
-                          onDragEnd={() => { setDrag(null); setOverKey(null); }}
-                          onClick={(e) => { const rc = e.currentTarget.getBoundingClientRect(); setPicker(null); setChipMenu({ sid: st.id, fid: f.id, chipId: c.id, rect: { left: rc.left, top: rc.top, bottom: rc.bottom } }); }}
-                          title={p ? `${p.title || "—"} · reports to ${p.managerName || "—"}` : missing ? `No longer in ${source.name}` : "Open role / not in the org"}>
-                          <span className="mx-avatar" style={c.ref ? { background: color } : undefined}>{c.ref ? initials(p?.name || c.name) : "?"}</span>
-                          <span className="mx-chip-text"><strong>{p?.name || c.name || "Open role"}</strong><em>{c.role || p?.title || (c.ref ? "" : "open role")}</em></span>
-                        </button>
-                      );
-                    })}
-                    <button className="mx-add" onClick={(e) => openPicker(e, { mode: "cell", sid: st.id, fid: f.id })} title={`Add people to ${st.name || "this subteam"} · ${f.label || "this function"}`}><Plus size={14} strokeWidth={1.8} />{chips.length ? "" : <span>Add people</span>}</button>
+                  <div key={st.id} className={`mx-sub-head ${overKey === k ? "mx-cell-over" : ""}`} style={{ gridColumn: c, gridRow: R_SUB, "--c": color }} {...dropProps(k)}>
+                    <div className="mx-fn-row">
+                      <InlineEdit className="mx-sub-name" value={st.name} placeholder="Name this subteam" autoEdit={editing?.type === "sub" && editing.id === st.id} onDone={() => setEditing(null)} onCommit={(v) => rename("subteams", st.id, "name", v)} />
+                      <Tools what="this subteam" prevIcon={<ChevronLeft size={13} />} nextIcon={<ChevronRight size={13} />} canPrev={i > 0} canNext={i < cols.length - 1} onPrev={() => moveIn("subteams", st.id, -1, true)} onNext={() => moveIn("subteams", st.id, 1, true)} onRemove={() => removeSub(st)} />
+                    </div>
+                    <button className={`mx-sublead ${st.leadRef ? "" : "mx-sublead-empty"}`} onClick={(e) => openPicker(e, { mode: "subLead", stId: st.id })}>
+                      {st.leadRef ? (<><Crown size={12} strokeWidth={1.8} /><span><strong>{displayName(st.leadRef)}</strong> leads</span></>) : (<><Crown size={12} strokeWidth={1.6} /><span>set a lead</span></>)}
+                      <span className="mx-rel">{n ? `works with ${n} part${n === 1 ? "" : "s"} of the business` : ""}</span>
+                    </button>
+                    <div className="mx-members">{renderChips(k, st.id, color)}
+                      <button className="mx-add mx-add-on" onClick={(e) => openPicker(e, { mode: "members", stId: st.id })}><Plus size={14} strokeWidth={1.8} /><span>{(doc.cells[k] || []).length ? "Add" : "Add the people in this subteam"}</span></button>
+                    </div>
                   </div>
                 );
               })}
-              <div className="mx-fill" />
+              <div className="mx-addsub" style={{ gridColumn: addCol, gridRow: R_SUB }}>
+                <button className="mx-addbtn mx-addbtn-sm" onClick={() => addSubteam(g.id)}><Plus size={14} strokeWidth={1.8} /> Subteam</button>
+                {cols.length === 0 && <span className="mx-hint">e.g. “Field Engineers”</span>}
+              </div>
             </React.Fragment>
           ))}
 
-          <div className="mx-addrow" style={{ gridColumn: `1 / span ${F.length + 2}` }}>
-            <button className="mx-addbtn" onClick={addSubteam}><Plus size={15} strokeWidth={1.8} /> Add subteam</button>
-            {S.length === 0 && <span className="mx-hint">Start here — e.g. “Connect Lite API”, “Connect Field Engineers”. Then add the functions that work with them across the top.</span>}
+          {P.map((pt, r) => {
+            const head = person(pt.headRef); const row = R_P0 + r;
+            return (
+              <React.Fragment key={pt.id}>
+                <div className="mx-rowhead" style={{ gridColumn: 1, gridRow: row }}>
+                  <div className="mx-fn-row">
+                    <InlineEdit className="mx-fn-label" value={pt.label} placeholder="Name this part of the business" autoEdit={editing?.type === "partner" && editing.id === pt.id} onDone={() => setEditing(null)} onCommit={(v) => rename("partners", pt.id, "label", v)} />
+                    <Tools what="this relationship" prevIcon={<ChevronUp size={13} />} nextIcon={<ChevronDown size={13} />} canPrev={r > 0} canNext={r < P.length - 1} onPrev={() => moveIn("partners", pt.id, -1)} onNext={() => moveIn("partners", pt.id, 1)} onRemove={() => removePartner(pt)} />
+                  </div>
+                  <button className={`mx-head ${head ? "" : "mx-head-empty"}`} onClick={(e) => openPicker(e, { mode: "partnerHead", pid: pt.id })}>
+                    {head ? (<><span className="mx-avatar mx-avatar-partner">{initials(head.name)}</span><span className="mx-head-text"><strong>{head.name}</strong><em>{head.title || "Head"}</em></span></>) : (<><UserPlus size={14} strokeWidth={1.7} /><span>Who heads it?</span></>)}
+                  </button>
+                </div>
+                {plan.map(({ g, cols, addCol }) => (
+                  <React.Fragment key={pt.id + g.id}>
+                    {cols.map(({ st, col: c }) => {
+                      const k = ck(pt.id, st.id); const has = (doc.cells[k] || []).length > 0;
+                      return (
+                        <div key={k} className={`mx-cell ${overKey === k ? "mx-cell-over" : ""} ${has ? "mx-cell-linked" : "mx-cell-empty"}`} style={{ gridColumn: c, gridRow: row, "--c": "#b8442a" }} {...dropProps(k)}>
+                          {renderChips(k, st.id, "#b8442a")}
+                          <button className="mx-add" onClick={(e) => openPicker(e, { mode: "cell", pid: pt.id, stId: st.id })} title={`Who from ${pt.label || "this part of the business"} works with ${st.name || "this subteam"}?`}><Plus size={14} strokeWidth={1.8} />{has ? "" : <span>Link</span>}</button>
+                        </div>
+                      );
+                    })}
+                    <div className="mx-fill" style={{ gridColumn: addCol, gridRow: row }} />
+                  </React.Fragment>
+                ))}
+                <div className="mx-fill" style={{ gridColumn: lastCol, gridRow: row }} />
+              </React.Fragment>
+            );
+          })}
+
+          <div className="mx-addrow" style={{ gridColumn: `1 / ${lastCol + 1}`, gridRow: R_ADD }}>
+            <button className="mx-addbtn" onClick={(e) => openPicker(e, { mode: "newPartner" })}><Plus size={15} strokeWidth={1.8} /> Add a relationship into the business</button>
+            <span className="mx-hint">{P.length === 0 ? "e.g. Account Mgmt (Ericka). Add as many as you need — then link each subteam to the ones it works with." : "A subteam can link to as many of these as it needs."}</span>
           </div>
         </div>
       </div>
 
       {picker && <PeoplePicker ctx={pickerCtx} rect={picker.rect} source={source} onPick={onPick} onClose={() => setPicker(null)} />}
       {chipMenu && (() => {
-        const chip = (doc.cells[cellKey(chipMenu.sid, chipMenu.fid)] || []).find((c) => c.id === chipMenu.chipId); if (!chip) return null;
-        const p = person(chip.ref);
-        return (<ChipMenu chip={chip} p={p} rect={chipMenu.rect} sourceName={source.name}
-          onRole={(v) => setRole(chipMenu.sid, chipMenu.fid, chip.id, v)}
-          onLead={chip.ref ? () => { apply((d) => { const s = d.subteams.find((x) => x.id === chipMenu.sid); if (s) s.leadRef = chip.ref; return d; }); setChipMenu(null); } : null}
-          onRemove={() => { removeChip(chipMenu.sid, chipMenu.fid, chip.id); setChipMenu(null); }}
+        const chip = (doc.cells[chipMenu.key] || []).find((c) => c.id === chipMenu.chipId); if (!chip) return null;
+        const isMember = chipMenu.key.startsWith(MEM + "|");
+        return (<ChipMenu chip={chip} p={person(chip.ref)} rect={chipMenu.rect} sourceName={source.name}
+          onRole={(v) => setRole(chipMenu.key, chip.id, v)}
+          onLead={chip.ref && isMember ? () => { apply((d) => { const s = d.subteams.find((x) => x.id === chipMenu.stId); if (s) s.leadRef = chip.ref; return d; }); setChipMenu(null); } : null}
+          onRemove={() => { removeChip(chipMenu.key, chip.id); setChipMenu(null); }}
           onClose={() => setChipMenu(null)} />);
       })()}
     </div>
@@ -444,9 +542,9 @@ const mxStyles = `
 .mx-scroll { overflow: auto; max-height: calc(100vh - 210px); border: 1px solid var(--line); border-radius: 12px; background: #fbf8f0; box-shadow: var(--shadow); }
 .mx-grid { display: grid; min-width: max-content; }
 .mx-grid > div { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.mx-corner { position: sticky; left: 0; top: 0; z-index: 4; background: #f3eee1; display: flex; flex-direction: column; justify-content: space-between; padding: 12px 14px; min-height: 96px; }
+.mx-corner { position: sticky; left: 0; z-index: 4; background: #f3eee1; display: flex; flex-direction: column; justify-content: space-between; padding: 12px 14px; min-height: 96px; }
 .mx-axis { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); } .mx-axis-col { align-self: flex-end; }
-.mx-fn { position: sticky; top: 0; z-index: 3; background: #fffdf7; padding: 0 12px 12px; }
+.mx-fn { background: #fffdf7; padding: 0 12px 12px; }
 .mx-fn-bar { height: 4px; background: var(--c); margin: 0 -12px 10px; }
 .mx-fn-row { display: flex; align-items: flex-start; gap: 6px; }
 .mx-fn-label, .mx-sub-name { flex: 1; font-family: 'Iowan Old Style', Georgia, serif; font-size: 16px; font-weight: 600; letter-spacing: -0.005em; line-height: 1.25; cursor: text; border-radius: 4px; padding: 2px 4px; margin: -2px -4px; min-width: 0; }
@@ -464,6 +562,21 @@ const mxStyles = `
 .mx-sublead.mx-head-empty svg { color: var(--ink-faint); }
 .mx-avatar { width: 28px; height: 28px; flex: none; border-radius: 50%; display: grid; place-items: center; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10.5px; font-weight: 700; color: #fff; background: #a89c86; letter-spacing: .02em; }
 .mx-rowhead { position: sticky; left: 0; z-index: 2; background: #f7f3e8; padding: 14px 14px 12px; }
+.mx-group { background: #fffdf7; padding: 0 14px 12px; }
+.mx-group-row { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.mx-group-label { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--c); cursor: text; border-radius: 4px; padding: 3px 6px; margin-left: -6px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mx-group-label:hover { background: var(--paper-2); } input.mx-group-label { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 400; color: var(--ink); }
+.mx-group:hover .mx-tools { opacity: 1; } .mx-sub-head:hover .mx-tools { opacity: 1; }
+.mx-head-inline { margin-top: 6px; white-space: nowrap; } .mx-head-inline.mx-head-empty { width: auto; display: inline-flex; }
+.mx-avatar-lg { width: 34px; height: 34px; font-size: 12px; } .mx-avatar-partner { background: #b8442a; }
+.mx-sub-head { background: color-mix(in srgb, var(--c) 5%, #fffdf8); padding: 12px 12px 12px; display: flex; flex-direction: column; gap: 2px; box-shadow: inset 0 2px 0 color-mix(in srgb, var(--c) 35%, transparent); transition: background .12s, box-shadow .12s; }
+.mx-sublead-empty { color: var(--ink-faint); font-style: italic; } .mx-sublead-empty svg { color: var(--ink-faint) !important; }
+.mx-rel { margin-left: auto; font-size: 11px; font-style: italic; color: var(--accent); }
+.mx-members { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.mx-add-on { opacity: .7 !important; } .mx-add-on:hover { opacity: 1 !important; }
+.mx-addsub { background: #f3eee1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 10px 6px; text-align: center; }
+.mx-addbtn-sm { padding: 7px 11px; font-size: 12.5px; position: static; }
+.mx-cell-linked { background: color-mix(in srgb, #b8442a 4%, #fffdf8); }
 .mx-cell { padding: 10px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 7px; min-height: 84px; background: #fffdf8; transition: background .12s, box-shadow .12s; }
 .mx-cell-over { background: color-mix(in srgb, var(--c) 9%, #fffdf8); box-shadow: inset 0 0 0 2px var(--c); }
 .mx-chip { display: flex; align-items: center; gap: 8px; max-width: 100%; text-align: left; padding: 5px 11px 5px 5px; border: 1px solid var(--line); border-radius: 999px; background: #fff; cursor: grab; font-family: inherit; color: var(--ink); transition: box-shadow .12s, border-color .12s, transform .12s; }
@@ -474,7 +587,7 @@ const mxStyles = `
 .mx-add { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 12px; border: 1px dashed var(--rule); border-radius: 999px; background: transparent; color: var(--ink-faint); cursor: pointer; font-family: 'Iowan Old Style', Georgia, serif; font-size: 12.5px; font-style: italic; opacity: 0; transition: opacity .12s, color .12s, border-color .12s; }
 .mx-cell:hover .mx-add, .mx-cell-empty .mx-add { opacity: 1; } .mx-cell-empty .mx-add { opacity: .55; } .mx-cell-empty:hover .mx-add { opacity: 1; }
 .mx-add:hover { color: var(--ink); border-color: var(--ink); border-style: solid; }
-.mx-fill, .mx-addfn { background: #f3eee1; } .mx-addfn { position: sticky; top: 0; z-index: 3; display: grid; place-items: center; padding: 12px; }
+.mx-fill, .mx-addfn { background: #f3eee1; } .mx-addfn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 14px; text-align: center; }
 .mx-addrow { display: flex; align-items: center; gap: 16px; padding: 14px; background: #f3eee1; border-bottom: none !important; }
 .mx-addbtn { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border: 1px dashed var(--ink-faint); border-radius: 999px; background: transparent; color: var(--ink-soft); cursor: pointer; font-family: 'Iowan Old Style', Georgia, serif; font-size: 13.5px; white-space: nowrap; position: sticky; left: 14px; }
 .mx-addbtn:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); border-style: solid; }
