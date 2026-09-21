@@ -21,8 +21,8 @@ const isArchived = (c) => c.archived === true || c.archived === "true";
 const isMatrix = (c) => c.kind === "matrix";
 const rid = () => Math.random().toString(36).slice(2, 10);
 const matrixSeed = (name, sourceChartId) => ({
-  id: "root", kind: "matrix", v: 4, sourceChartId, leadRef: null,
-  pods: [], rows: [], cells: {}, children: [],
+  id: "root", kind: "matrix", v: 5, sourceChartId, leadRef: null,
+  top: [], left: [], cells: {}, children: [],
 });
 
 export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
@@ -215,7 +215,7 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
           <div className="list-head list-head-2">
             <div>
               <h2>Team matrices</h2>
-              <div className="list-sub">A team's subteams across the top; down the side, the functions — inside the team and across the business — that staff them.</div>
+              <div className="list-sub">A free-form grid: teams and subteams across the top and down the side, people where they meet.</div>
             </div>
             <button className="tb tb-primary" disabled={!sources.length}
               onClick={() => { setCreatingMatrix(true); setMatrixSource(defaultSourceId); }}>

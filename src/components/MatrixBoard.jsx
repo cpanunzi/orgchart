@@ -4,33 +4,27 @@ import { supabase } from "../lib/supabase.js";
 import { sharedStyles } from "./styles.js";
 
 // ---------------------------------------------------------------------------------------------
-// Team matrix board.
-//   columns = the team's subteams (Customer Operations, Field Engineering …). A subteam doesn't
-//             belong to one leader — it is staffed from several functions at once.
-//   rows    = the functions that staff them, each headed by a person, in two blocks:
-//               core  — the team's own leadership (Tali · Product, Nick · Engineering)
-//               wider — the rest of the business (Ericka · Account Mgmt)
-//   cells   = the people from that function dedicated to that subteam, shown grouped by which
-//             of the function head's teams they come from ("Julian's team").
+// Team matrix board — a free-form two-level grid.
+//   across the top : teams, each split into subteams   (two header rows)
+//   down the left  : teams, each split into subteams   (two header columns)
+//   cells          : the people where a left lane meets a top lane
+// Nothing is assumed about what either axis means — every label, person and split is hers to
+// set. A team with no subteams is a single lane on its own.
 // People are references (`ref`) into a functional chart (doc.sourceChartId), read live from it.
-//   { id:"root", kind:"matrix", v:4, sourceChartId, leadRef,
-//     pods:[{id,name,leadRef}], rows:[{id,label,headRef,core}],
-//     cells:{ "<rowId>|<podId>": [{id, ref, name, role}] } }
+//   { id:"root", kind:"matrix", v:5, sourceChartId, leadRef,
+//     top:[team], left:[team],   team = { id, label, headRef, subs:[{ id, label, headRef }] }
+//     cells:{ "<leftLaneId>|<topLaneId>": [{ id, ref, name, role }] } }   lane id = sub id, or team id if no subs
 // ---------------------------------------------------------------------------------------------
 
 const rid = () => Math.random().toString(36).slice(2, 10);
 const clone = (x) => JSON.parse(JSON.stringify(x));
-const ck = (rowId, podId) => `${rowId}|${podId}`;
-const COLORS = ["#3b6ea5", "#6d5aa8", "#2f7f86", "#5b7a3f", "#b07d2a", "#a0527a", "#6b6252"];
-const WIDE_COLOR = "#b8442a";
-const fnLabelFrom = (p) => {
-  if (!p) return "";
-  const t = (p.title || "").replace(/^\s*(chief|s?e?vp|svp|evp|vp|vice president|head|director|lead|manager|gm|general manager)\b[\s,]*(of\s+)?/i, "").trim();
-  return t || p.team || p.title || "";
-};
+const ck = (leftId, topId) => `${leftId}|${topId}`;
+const TOP_COLORS = ["#3b6ea5", "#6d5aa8", "#2f7f86", "#5b7a3f", "#7a6a3b"];
+const LEFT_COLORS = ["#b8442a", "#b07d2a", "#a0527a", "#4f6d7a", "#6b6252"];
 const initials = (name) => (name || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0] || "").join("").toUpperCase() || "?";
+const lanesOf = (teams) => (teams || []).flatMap((t) => (t.subs && t.subs.length ? t.subs.map((sub) => ({ id: sub.id, team: t, sub })) : [{ id: t.id, team: t, sub: null }]));
 
-// ---- upgrades from earlier board formats ------------------------------------------------------
+// ---- upgrades from earlier board formats (each step only ever reads shapes it recognises) -----
 const v1toV2 = (tree) => {
   const core = { id: rid(), label: "Core team", headRef: null };
   const subteams = [], cells = {};
@@ -43,27 +37,31 @@ const v1toV2 = (tree) => {
   return { v: 2, sourceChartId: tree?.sourceChartId || null, archived: tree?.archived, leadRef: null, functions: [core], subteams, cells };
 };
 const toV4 = (raw) => {
-  if (raw && raw.v === 4) return { doc: raw, migrated: false };
+  if (raw && raw.v === 4) return raw;
   const pods = [], rows = [], cells = {};
   const put = (k, chips) => { if (chips && chips.length) cells[k] = [...(cells[k] || []), ...chips]; };
   let t = raw || {};
   if (t.v === 3) {
-    // v3: leaders (groups) owned subteams; partners ran down the side. Subteams stay as columns;
-    // leaders and partners both become function rows; a subteam's members sit in its leader's row.
     (t.subteams || []).forEach((st) => pods.push({ id: st.id, name: st.name || "", leadRef: st.leadRef || null }));
     (t.groups || []).forEach((g) => rows.push({ id: g.id, label: g.label || "", headRef: g.headRef || null, core: true }));
     (t.partners || []).forEach((pt) => rows.push({ id: pt.id, label: pt.label || "", headRef: pt.headRef || null, core: false }));
-    Object.entries(t.cells || {}).forEach(([k, chips]) => {
-      const [rowId, stId] = k.split("|");
-      if (rowId === "_m") { const st = (t.subteams || []).find((x) => x.id === stId); if (st) put(ck(st.groupId, stId), chips); } else put(k, chips);
-    });
+    Object.entries(t.cells || {}).forEach(([k, chips]) => { const [rowId, stId] = k.split("|"); if (rowId === "_m") { const st = (t.subteams || []).find((x) => x.id === stId); if (st) put(`${st.groupId}|${stId}`, chips); } else put(k, chips); });
   } else {
     if (t.v !== 2) t = v1toV2(t);
     (t.subteams || []).forEach((st) => { if ((st.name || "").trim() || st.leadRef) pods.push({ id: st.id, name: st.name || "", leadRef: st.leadRef || null }); });
-    (t.functions || []).forEach((f) => { rows.push({ id: f.id, label: f.label || "", headRef: f.headRef || null, core: true }); });
-    Object.entries(t.cells || {}).forEach(([k, chips]) => { const [sid, fid] = k.split("|"); put(ck(fid, sid), chips); });
+    (t.functions || []).forEach((f) => rows.push({ id: f.id, label: f.label || "", headRef: f.headRef || null, core: true }));
+    Object.entries(t.cells || {}).forEach(([k, chips]) => { const [sid, fid] = k.split("|"); put(`${fid}|${sid}`, chips); });
   }
-  const doc = { id: "root", kind: "matrix", v: 4, sourceChartId: t.sourceChartId || null, leadRef: t.leadRef || null, pods, rows, cells, children: [] };
+  return { v: 4, sourceChartId: t.sourceChartId || null, leadRef: t.leadRef || null, archived: t.archived, pods, rows, cells };
+};
+// v4 (subteam columns × function rows) → v5: the columns become subteams of one top team (hers to
+// name or split up); each function row becomes a team down the left. Cell keys are unchanged.
+const toV5 = (raw) => {
+  if (raw && raw.v === 5) return { doc: raw, migrated: false };
+  const t = toV4(raw);
+  const top = (t.pods || []).length ? [{ id: rid(), label: "", headRef: null, subs: t.pods.map((pd) => ({ id: pd.id, label: pd.name || "", headRef: pd.leadRef || null })) }] : [];
+  const left = (t.rows || []).map((r) => ({ id: r.id, label: r.label || "", headRef: r.headRef || null, subs: [] }));
+  const doc = { id: "root", kind: "matrix", v: 5, sourceChartId: t.sourceChartId || null, leadRef: t.leadRef || null, top, left, cells: t.cells || {}, children: [] };
   if (t.archived) doc.archived = t.archived;
   return { doc, migrated: true };
 };
@@ -81,27 +79,25 @@ const buildSource = (tree) => {
   if (tree) rec(tree, null);
   const kidsOf = (id) => kids.get(id) || [];
   const orgOf = (id) => { const out = new Set(); const go = (x) => { if (out.has(x)) return; out.add(x); kidsOf(x).forEach(go); }; if (id) go(id); return out; };
-  // which of `headId`'s direct reports does `id` roll up to? (null if it's the head, or outside their org)
-  const branchOf = (headId, id) => { if (!headId || id === headId) return null; let cur = byId.get(id), guard = 0; while (cur && cur.managerId && cur.managerId !== headId && guard++ < 60) cur = byId.get(cur.managerId); return cur && cur.managerId === headId ? cur : null; };
-  return { list, byId, orgOf, kidsOf, branchOf };
+  return { list, byId, orgOf, kidsOf };
 };
+
 // ---- safety net against out-of-date tabs ------------------------------------------------------
-// An old tab running an earlier build doesn't understand this format; if it saves, it overwrites
-// the board with an empty one. We can't fix old tabs, so: keep a copy of every save in this
-// browser, refuse to load/overwrite formats NEWER than this build, and when a stale write lands
-// on an open board, put the good version straight back.
-const V = 4;
-const weight = (d) => (d ? (d.pods || []).length + (d.rows || []).length + Object.values(d.cells || {}).reduce((n, a) => n + a.length, 0) : 0);
+// A tab running an earlier build doesn't understand this format. So: keep a copy of every save
+// in this browser; never load or overwrite a format NEWER than this build; if what's stored is
+// emptier than our copy, offer it back instead of saving; and if an OLDER-format write lands on
+// an open board, put the good version straight back.
+const V = 5;
+const weight = (d) => { if (!d) return 0; const ax = (teams) => (teams || []).reduce((n, t) => n + 1 + (t.subs || []).length, 0); return ax(d.top) + ax(d.left) + Object.values(d.cells || {}).reduce((n, a) => n + a.length, 0); };
 const bkKey = (id) => `atelier-matrix-backup:${id}`;
-const readBackup = (id) => { try { const b = JSON.parse(localStorage.getItem(bkKey(id)) || "null"); return b && b.doc && b.doc.v === V ? b : null; } catch { return null; } };
+const readBackup = (id) => { try { const bk = JSON.parse(localStorage.getItem(bkKey(id)) || "null"); return bk && bk.doc && bk.doc.v === V ? bk : null; } catch { return null; } };
 const writeBackup = (id, doc) => { try { if (weight(doc) > 0) localStorage.setItem(bkKey(id), JSON.stringify({ at: Date.now(), doc })); } catch { /* storage full/blocked — not fatal */ } };
 
-const EMPTY_SOURCE = { list: [], byId: new Map(), orgOf: () => new Set(), kidsOf: () => [], branchOf: () => null, name: "", ready: false };
+const EMPTY_SOURCE = { list: [], byId: new Map(), orgOf: () => new Set(), kidsOf: () => [], name: "", ready: false };
 
 // small move/remove toolbar shown on hover (module-level so it isn't remounted every render)
-const Tools = ({ onPrev, onNext, onRemove, prevIcon, nextIcon, canPrev, canNext, what, extra }) => (
+const Tools = ({ onPrev, onNext, onRemove, prevIcon, nextIcon, canPrev, canNext, what }) => (
   <div className="mx-tools">
-    {extra}
     <button className="mx-tool" disabled={!canPrev} onClick={onPrev} title="Move">{prevIcon}</button>
     <button className="mx-tool" disabled={!canNext} onClick={onNext} title="Move">{nextIcon}</button>
     <button className="mx-tool mx-tool-danger" onClick={onRemove} title={`Remove ${what}`}><Trash2 size={13} /></button>
@@ -118,9 +114,9 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   const [tooNew, setTooNew] = useState(false);   // saved by a newer build than this tab — don't touch it
   const [rescue, setRescue] = useState(null);     // { at, doc } — a fuller copy from this browser, offered back
   const [source, setSource] = useState(EMPTY_SOURCE);
-  const [picker, setPicker] = useState(null);     // { mode, podId?, rowId?, core?, rect }
-  const [chipMenu, setChipMenu] = useState(null); // { key, chipId, podId, rect }
-  const [editing, setEditing] = useState(null);   // { type:"pod"|"row", id }
+  const [picker, setPicker] = useState(null);     // { mode, leftId?, topId?, axis?, teamId?, subId?, rect }
+  const [chipMenu, setChipMenu] = useState(null); // { key, chipId, rect }
+  const [editing, setEditing] = useState(null);   // id of the team/subteam being renamed
   const [drag, setDrag] = useState(null);         // { key, chipId }
   const [overKey, setOverKey] = useState(null);
   const docRef = useRef(null);
@@ -160,7 +156,7 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
       if (error) { setLoadError(error.message); return; }
       setName(data.name); lastRemoteAt.current = new Date(data.updated_at).getTime();
       if (data.tree && data.tree.v > V) { setTooNew(true); return; }
-      const { doc: d, migrated } = toV4(data.tree);
+      const { doc: d, migrated } = toV5(data.tree);
       const bk = readBackup(chartId);
       if (bk && weight(bk.doc) > weight(d)) { setRescue(bk); setDoc(d, { save: false }); return; } // don't save over anything until she chooses
       setDoc(d, { save: migrated });
@@ -178,7 +174,8 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
         if (dirty.current || saveTimer.current) return;
         lastRemoteAt.current = ts;
         const incoming = payload.new.tree;
-        if (!incoming || incoming.v !== V) { if (docRef.current && weight(docRef.current) > 0) scheduleSave(docRef.current, undefined); return; }
+        if (incoming && incoming.v > V) { setTooNew(true); return; }                       // a newer build is editing — step aside
+        if (!incoming || incoming.v !== V) { if (docRef.current && weight(docRef.current) > 0) scheduleSave(docRef.current, undefined); return; } // an older tab overwrote it — put ours back
         setDoc(incoming, { save: false }); setName(payload.new.name);
       }).subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -216,25 +213,27 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
   const saveName = (v) => { const nv = v.trim() || "Untitled team"; setName(nv); scheduleSave(undefined, nv); setEditingName(false); onRenamed && onRenamed(); };
   const openPicker = (e, p) => { const r = e.currentTarget.getBoundingClientRect(); setChipMenu(null); setPicker({ ...p, rect: { left: r.left, top: r.top, bottom: r.bottom } }); };
 
-  // ---- actions ------------------------------------------------------------------------------
+  // ---- actions (the two axes are symmetrical: axis = "top" | "left") ------------------------
+  const side = (k, axis) => k.split("|")[axis === "left" ? 0 : 1];
   const dropCells = (d, pred) => Object.keys(d.cells).forEach((k) => { if (pred(k)) delete d.cells[k]; });
   const peopleIn = (pred) => Object.entries(doc.cells || {}).reduce((n, [k, v]) => n + (pred(k) ? v.length : 0), 0);
   const confirmLoss = (what, n) => !n || window.confirm(`Remove ${what} and the ${n} ${n === 1 ? "person" : "people"} placed in it?`);
 
-  const addPod = () => { const id = rid(); apply((d) => { d.pods.push({ id, name: "", leadRef: null }); return d; }); setEditing({ type: "pod", id }); };
-  const addRow = (core, headRef, label) => { const id = rid(); apply((d) => { d.rows.push({ id, label: label || "", headRef: headRef || null, core }); return d; }); setEditing({ type: "row", id }); };
-  const rename = (arr, id, field, v) => apply((d) => { const x = d[arr].find((y) => y.id === id); if (x) x[field] = v.trim(); return d; });
-  const moveIn = (arr, id, delta, within) => apply((d) => {
-    const a = d[arr]; const i = a.findIndex((x) => x.id === id); if (i < 0) return d;
-    let j = i + delta; if (within) while (j >= 0 && j < a.length && !!a[j][within] !== !!a[i][within]) j += delta;
-    if (j < 0 || j >= a.length) return d;
-    const [x] = a.splice(i, 1); a.splice(j, 0, x); return d;
-  });
-  const toggleCore = (row) => apply((d) => { const x = d.rows.find((y) => y.id === row.id); if (x) x.core = !x.core; return d; });
-  const removePod = (pod) => { const n = peopleIn((k) => k.split("|")[1] === pod.id); if (!confirmLoss(`"${pod.name || "this subteam"}"`, n)) return;
-    apply((d) => { d.pods = d.pods.filter((x) => x.id !== pod.id); dropCells(d, (k) => k.split("|")[1] === pod.id); return d; }); };
-  const removeRow = (row) => { const n = peopleIn((k) => k.split("|")[0] === row.id); if (!confirmLoss(`the "${row.label || displayName(row.headRef, "function")}" row`, n)) return;
-    apply((d) => { d.rows = d.rows.filter((x) => x.id !== row.id); dropCells(d, (k) => k.split("|")[0] === row.id); return d; }); };
+  const addTeam = (axis) => { const id = rid(); apply((d) => { d[axis].push({ id, label: "", headRef: null, subs: [] }); return d; }); setEditing(id); };
+  const addSub = (axis, teamId) => { const id = rid(); apply((d) => {
+    const t = d[axis].find((x) => x.id === teamId); if (!t) return d;
+    if (!t.subs.length) Object.keys(d.cells).forEach((k) => { if (side(k, axis) === t.id) { const [l, tp] = k.split("|"); const nk = axis === "left" ? ck(id, tp) : ck(l, id); d.cells[nk] = d.cells[k]; delete d.cells[k]; } }); // people placed on the whole team follow into its first subteam
+    t.subs.push({ id, label: "", headRef: null }); return d; }); setEditing(id); };
+  const find = (d, axis, teamId, subId) => { const t = d[axis].find((x) => x.id === teamId); return subId ? (t && t.subs.find((x) => x.id === subId)) : t; };
+  const renameNode = (axis, teamId, subId, v) => apply((d) => { const n = find(d, axis, teamId, subId); if (n) n.label = v.trim(); return d; });
+  const setHead = (axis, teamId, subId, ref) => apply((d) => { const n = find(d, axis, teamId, subId); if (n) n.headRef = ref || null; return d; });
+  const moveTeam = (axis, teamId, delta) => apply((d) => { const a = d[axis]; const i = a.findIndex((x) => x.id === teamId), j = i + delta; if (i < 0 || j < 0 || j >= a.length) return d; const [x] = a.splice(i, 1); a.splice(j, 0, x); return d; });
+  const moveSub = (axis, teamId, subId, delta) => apply((d) => { const t = d[axis].find((x) => x.id === teamId); if (!t) return d; const a = t.subs; const i = a.findIndex((x) => x.id === subId), j = i + delta; if (i < 0 || j < 0 || j >= a.length) return d; const [x] = a.splice(i, 1); a.splice(j, 0, x); return d; });
+  const removeTeam = (axis, t) => { const ids = lanesOf([t]).map((l) => l.id); const n = peopleIn((k) => ids.includes(side(k, axis)));
+    if (!confirmLoss(`"${t.label || displayName(t.headRef, "this team")}"${t.subs.length ? ` and its ${t.subs.length} subteam${t.subs.length === 1 ? "" : "s"}` : ""}`, n)) return;
+    apply((d) => { d[axis] = d[axis].filter((x) => x.id !== t.id); dropCells(d, (k) => ids.includes(side(k, axis))); return d; }); };
+  const removeSub = (axis, t, sub) => { const n = peopleIn((k) => side(k, axis) === sub.id); if (!confirmLoss(`"${sub.label || "this subteam"}"`, n)) return;
+    apply((d) => { const tt = d[axis].find((x) => x.id === t.id); if (tt) tt.subs = tt.subs.filter((x) => x.id !== sub.id); dropCells(d, (k) => side(k, axis) === sub.id); return d; }); };
   const addTo = (key, pick) => apply((d) => { const arr = d.cells[key] || (d.cells[key] = []); if (pick.ref && arr.some((c) => c.ref === pick.ref)) return d; arr.push({ id: rid(), ref: pick.ref || null, name: pick.name || "", role: "" }); return d; });
   const removeChip = (key, chipId) => apply((d) => { d.cells[key] = (d.cells[key] || []).filter((c) => c.id !== chipId); if (!d.cells[key].length) delete d.cells[key]; return d; });
   const setRole = (key, chipId, role) => apply((d) => { const c = (d.cells[key] || []).find((x) => x.id === chipId); if (c) c.role = role; return d; });
@@ -242,10 +241,8 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
 
   const onPick = (pick) => {
     const p = picker; if (!p) return;
-    if (p.mode === "cell") { addTo(ck(p.rowId, p.podId), pick); return; }      // stays open — add several
-    if (p.mode === "newRow") addRow(p.core, pick.ref, pick.ref ? fnLabelFrom(person(pick.ref)) : pick.name);
-    if (p.mode === "rowHead") apply((d) => { const x = d.rows.find((y) => y.id === p.rowId); if (x) x.headRef = pick.ref || null; return d; });
-    if (p.mode === "podLead") apply((d) => { const x = d.pods.find((y) => y.id === p.podId); if (x) x.leadRef = pick.ref || null; return d; });
+    if (p.mode === "cell") { addTo(ck(p.leftId, p.topId), pick); return; }      // stays open — add several
+    if (p.mode === "head") setHead(p.axis, p.teamId, p.subId, pick.ref);
     if (p.mode === "teamLead") apply((d) => { d.leadRef = pick.ref || null; return d; });
     setPicker(null);
   };
@@ -262,43 +259,42 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
     <button className="tb tb-primary" onClick={() => window.location.reload()}>Reload</button></div>);
   if (!doc) return <div style={{ padding: 60, fontFamily: "Iowan Old Style, Georgia, serif", color: "#8a7d6c" }}>Loading…</div>;
 
-  const PODS = doc.pods, ROWS = doc.rows;
-  const coreRows = ROWS.filter((r) => r.core), wideRows = ROWS.filter((r) => !r.core);
-  const lastCol = PODS.length + 2;
-  const tracks = ["272px", ...PODS.map(() => "minmax(250px, 1fr)"), "180px"].join(" ");
-  const rowColor = (row) => (row.core ? COLORS[coreRows.indexOf(row) % COLORS.length] : WIDE_COLOR);
-  const podStaffing = (podId) => ROWS.filter((r) => (doc.cells[ck(r.id, podId)] || []).length).length;
+  // ---- layout plan: explicit grid coordinates for both two-level axes -----------------------
+  const TOP = doc.top, LEFT = doc.left;
+  const tracks = ["204px", "190px"]; let col = 3;
+  const topPlan = TOP.map((t, ti) => { const start = col; const lanes = lanesOf([t]).map((lane) => { tracks.push("minmax(232px, 1fr)"); return { lane, col: col++ }; }); return { t, ti, start, end: col, lanes, color: TOP_COLORS[ti % TOP_COLORS.length] }; });
+  const lastCol = col; tracks.push("150px");
+  let row = 3;
+  const leftPlan = LEFT.map((t, ti) => { const start = row; const lanes = lanesOf([t]).map((lane) => ({ lane, row: row++ })); return { t, ti, start, end: row, lanes, color: LEFT_COLORS[ti % LEFT_COLORS.length] }; });
+  const lastRow = row;
 
-  const renderChip = (k, podId, color, c) => {
+  const headCell = ({ axis, t, sub, color, idx, count }) => {
+    const node = sub || t; const hp = person(node.headRef); const isTop = axis === "top";
+    return (<>
+      <div className="mx-fn-row">
+        <InlineEdit className={sub ? "mx-sub-name" : "mx-team-name"} value={node.label} placeholder={sub ? "Name this subteam" : "Name this team"} autoEdit={editing === node.id} onDone={() => setEditing(null)} onCommit={(v) => renameNode(axis, t.id, sub?.id, v)} />
+        <Tools what={sub ? "this subteam" : "this team"} prevIcon={isTop ? <ChevronLeft size={13} /> : <ChevronUp size={13} />} nextIcon={isTop ? <ChevronRight size={13} /> : <ChevronDown size={13} />} canPrev={idx > 0} canNext={idx < count - 1}
+          onPrev={() => (sub ? moveSub(axis, t.id, sub.id, -1) : moveTeam(axis, t.id, -1))} onNext={() => (sub ? moveSub(axis, t.id, sub.id, 1) : moveTeam(axis, t.id, 1))} onRemove={() => (sub ? removeSub(axis, t, sub) : removeTeam(axis, t))} />
+      </div>
+      <button className={`mx-person ${hp ? "" : "mx-person-empty"}`} onClick={(e) => openPicker(e, { mode: "head", axis, teamId: t.id, subId: sub?.id })} title={hp ? "Change or clear this person" : "Put a person on this (optional)"}>
+        {hp ? (<><span className={`mx-avatar ${sub ? "" : "mx-avatar-lg"}`} style={{ background: color }}>{initials(hp.name)}</span><span className="mx-head-text"><strong>{hp.name}</strong><em>{hp.title || ""}</em></span></>) : (<><UserPlus size={13} strokeWidth={1.7} /><span>person</span></>)}
+      </button>
+      {!sub && <button className="mx-plus mx-plus-sub" onClick={() => addSub(axis, t.id)} title={t.subs.length ? "Add another subteam" : "Split this team into subteams"}><Plus size={13} strokeWidth={1.8} /> subteam</button>}
+    </>);
+  };
+
+  const renderChip = (k, color, c) => {
     const p = person(c.ref); const missing = c.ref && source.ready && !p;
     return (
       <button key={c.id} className={`mx-chip ${!c.ref ? "mx-chip-open" : ""} ${missing ? "mx-chip-missing" : ""} ${drag?.chipId === c.id ? "mx-chip-drag" : ""}`} style={{ "--c": color }}
         draggable onDragStart={(e) => { setDrag({ key: k, chipId: c.id }); if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); } }}
         onDragEnd={() => { setDrag(null); setOverKey(null); }}
-        onClick={(e) => { const rc = e.currentTarget.getBoundingClientRect(); setPicker(null); setChipMenu({ key: k, chipId: c.id, podId, rect: { left: rc.left, top: rc.top, bottom: rc.bottom } }); }}
+        onClick={(e) => { const rc = e.currentTarget.getBoundingClientRect(); setPicker(null); setChipMenu({ key: k, chipId: c.id, rect: { left: rc.left, top: rc.top, bottom: rc.bottom } }); }}
         title={p ? `${p.title || "—"} · reports to ${p.managerName || "—"}` : missing ? `No longer in ${source.name}` : "Open role / not in the org"}>
         <span className="mx-avatar" style={c.ref ? { background: color } : undefined}>{c.ref ? initials(p?.name || c.name) : "?"}</span>
         <span className="mx-chip-text"><strong>{p?.name || c.name || "Open role"}</strong><em>{c.role || p?.title || (c.ref ? "" : "open role")}</em></span>
       </button>
     );
-  };
-  // people in a cell, grouped by which of the function head's teams they roll up to
-  const renderCellPeople = (k, podId, row, color) => {
-    const chips = doc.cells[k] || []; if (!chips.length) return null;
-    const loose = [], teams = new Map();
-    chips.forEach((c) => {
-      const br = row.headRef && c.ref ? source.branchOf(row.headRef, c.ref) : null;
-      if (br && source.kidsOf(br.id).length) { if (!teams.has(br.id)) teams.set(br.id, { lead: br, chips: [] }); teams.get(br.id).chips.push(c); } else loose.push(c);
-    });
-    return (<>
-      {loose.length > 0 && <div className="mx-chiprow">{loose.map((c) => renderChip(k, podId, color, c))}</div>}
-      {[...teams.values()].map((t) => (
-        <div className="mx-branch" key={t.lead.id}>
-          <div className="mx-branch-label">from {t.lead.name}'s team</div>
-          <div className="mx-chiprow">{t.chips.map((c) => renderChip(k, podId, color, c))}</div>
-        </div>
-      ))}
-    </>);
   };
   const dropProps = (k) => ({
     onDragOver: (e) => { if (!drag) return; e.preventDefault(); if (overKey !== k) setOverKey(k); },
@@ -306,61 +302,19 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
     onDrop: (e) => { e.preventDefault(); if (drag) moveChip(drag.key, drag.chipId, k); setDrag(null); setOverKey(null); },
   });
 
+  const laneName = (lane) => (lane.sub ? lane.sub.label || "subteam" : lane.team.label || displayName(lane.team.headRef, "team"));
   const pickerCtx = picker && (() => {
-    const pod = PODS.find((x) => x.id === picker.podId), row = ROWS.find((x) => x.id === picker.rowId);
-    const org = (ref) => (ref ? { id: ref, label: `${displayName(ref)}'s org` } : null);
-    if (picker.mode === "cell") return { title: `${row?.label || displayName(row?.headRef, "This function")} people on ${pod?.name || "this subteam"}`, anchor: org(row?.headRef), byTeam: true, taken: new Set((doc.cells[ck(picker.rowId, picker.podId)] || []).map((c) => c.ref).filter(Boolean)), multi: true, allowPlaceholder: true };
-    if (picker.mode === "newRow") return picker.core
-      ? { title: `Who leads a function inside ${name || "this team"}?`, hint: "Pick the leader — e.g. the product lead, the engineering lead. Or type a function name to add it without a leader.", allowPlaceholder: true, placeholderLabel: (q) => `Add “${q}” with no leader yet` }
-      : { title: "Which other part of the business?", hint: "Pick who heads it — e.g. the head of account management. Or type a name to add it without a head.", allowPlaceholder: true, placeholderLabel: (q) => `Add “${q}” with no head yet` };
-    if (picker.mode === "rowHead") return { title: `Who heads ${row?.label || "this function"}?`, clearable: !!row?.headRef };
-    if (picker.mode === "podLead") return { title: `Who leads ${pod?.name || "this subteam"}?`, clearable: !!pod?.leadRef };
+    if (picker.mode === "cell") {
+      const L = lanesOf(LEFT).find((x) => x.id === picker.leftId), T = lanesOf(TOP).find((x) => x.id === picker.topId);
+      const refs = [L?.sub?.headRef, L?.team.headRef, T?.sub?.headRef, T?.team.headRef].filter(Boolean);
+      const anchors = [...new Set(refs)].map((id) => ({ id, label: `${displayName(id)}'s org` }));
+      return { title: `${L ? laneName(L) : ""} × ${T ? laneName(T) : ""}`, anchors, byTeam: true, taken: new Set((doc.cells[ck(picker.leftId, picker.topId)] || []).map((c) => c.ref).filter(Boolean)), multi: true, allowPlaceholder: true };
+    }
+    if (picker.mode === "head") { const n = find(doc, picker.axis, picker.teamId, picker.subId); return { title: `Who's on “${n?.label || (picker.subId ? "this subteam" : "this team")}”?`, hint: "Optional — pick the person who leads or represents it.", clearable: !!n?.headRef }; }
     return { title: "Who leads the team?", clearable: !!doc.leadRef };
   })();
 
-  // ---- grid rows: header, then the two blocks of function rows ------------------------------
-  let gr = 2; const body = [];
-  const block = (core, rowsIn, title, blurb, addLabel) => {
-    body.push(
-      <div key={`bar-${core}`} className={`mx-bar ${core ? "mx-bar-core" : "mx-bar-wide"}`} style={{ gridColumn: `1 / ${lastCol + 1}`, gridRow: gr++ }}>
-        <div className="mx-bar-in">
-          <span className="mx-bar-title">{title}</span>
-          <button className="mx-addbtn mx-addbtn-sm" onClick={(e) => openPicker(e, { mode: "newRow", core })}><Plus size={14} strokeWidth={1.8} /> {addLabel}</button>
-          <span className="mx-bar-blurb">{blurb}</span>
-        </div>
-      </div>
-    );
-    rowsIn.forEach((row, i) => {
-      const r = gr++; const head = person(row.headRef); const color = rowColor(row);
-      body.push(
-        <div key={row.id} className="mx-rowhead" style={{ gridColumn: 1, gridRow: r, "--c": color }}>
-          <div className="mx-fn-row">
-            <InlineEdit className="mx-fn-label" value={row.label} placeholder="Name this function" autoEdit={editing?.type === "row" && editing.id === row.id} onDone={() => setEditing(null)} onCommit={(v) => rename("rows", row.id, "label", v)} />
-            <Tools what="this function" prevIcon={<ChevronUp size={13} />} nextIcon={<ChevronDown size={13} />} canPrev={i > 0} canNext={i < rowsIn.length - 1}
-              onPrev={() => moveIn("rows", row.id, -1, "core")} onNext={() => moveIn("rows", row.id, 1, "core")} onRemove={() => removeRow(row)}
-              extra={<button className="mx-tool" onClick={() => toggleCore(row)} title={row.core ? "Move to “Rest of the business”" : `Move to “${name || "Team"} leadership”`}>{row.core ? <ChevronDown size={13} strokeWidth={2.4} /> : <ChevronUp size={13} strokeWidth={2.4} />}</button>} />
-          </div>
-          <button className={`mx-head ${head ? "" : "mx-head-empty"}`} onClick={(e) => openPicker(e, { mode: "rowHead", rowId: row.id })}>
-            {head ? (<><span className="mx-avatar mx-avatar-lg" style={{ background: color }}>{initials(head.name)}</span><span className="mx-head-text"><strong>{head.name}</strong><em>{head.title || "Head"}</em></span></>) : (<><UserPlus size={14} strokeWidth={1.7} /><span>Who heads it?</span></>)}
-          </button>
-        </div>
-      );
-      PODS.forEach((pod, ci) => {
-        const k = ck(row.id, pod.id); const has = (doc.cells[k] || []).length > 0;
-        body.push(
-          <div key={k} className={`mx-cell ${overKey === k ? "mx-cell-over" : ""} ${has ? "mx-cell-linked" : "mx-cell-empty"}`} style={{ gridColumn: ci + 2, gridRow: r, "--c": color }} {...dropProps(k)}>
-            {renderCellPeople(k, pod.id, row, color)}
-            <button className="mx-add" onClick={(e) => openPicker(e, { mode: "cell", rowId: row.id, podId: pod.id })} title={`Who from ${row.label || "this function"} is on ${pod.name || "this subteam"}?`}><Plus size={14} strokeWidth={1.8} />{has ? "" : <span>Add people</span>}</button>
-          </div>
-        );
-      });
-      body.push(<div key={row.id + "-fill"} className="mx-fill" style={{ gridColumn: lastCol, gridRow: r }} />);
-    });
-    if (!rowsIn.length) body.push(<div key={`empty-${core}`} className="mx-emptyrow" style={{ gridColumn: `1 / ${lastCol + 1}`, gridRow: gr++ }}>{core ? "e.g. Tali for Product, Nick for Engineering — the people who lead a function inside this team." : "e.g. Account Mgmt (Ericka) — add as many as the subteams need."}</div>);
-  };
-  block(true, coreRows, `${name || "Team"} leadership`, "the functions inside this team — who each gives to every subteam", "Add a function lead");
-  block(false, wideRows, "Rest of the business", "other parts of the business these subteams also sit in or work with", "Add a part of the business");
-
+  const leftLanes = lanesOf(LEFT), topLanes = lanesOf(TOP);
   return (
     <div className="org-root mx-root">
       <style>{sharedStyles}</style>
@@ -379,45 +333,68 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
           {doc.leadRef ? (<span><strong>{displayName(doc.leadRef)}</strong><em>{person(doc.leadRef)?.title || "Team lead"}</em></span>) : <span><strong>Set team lead</strong><em>who runs {name || "this team"}?</em></span>}
         </button>
         <div className="mx-spacer" />
-        <div className="mx-stats"><span><strong>{PODS.length}</strong> subteams</span><span><strong>{ROWS.length}</strong> functions</span><span><strong>{stats.people}</strong> people</span></div>
+        <div className="mx-stats"><span><strong>{topLanes.length}</strong> across</span><span><strong>{leftLanes.length}</strong> down</span><span><strong>{stats.people}</strong> people</span></div>
         <button className="tb" onClick={undo} disabled={!history.length} title="Undo (⌘Z)"><RotateCcw size={14} strokeWidth={1.5} /> Undo</button>
         <div className={`mx-save mx-save-${saveStatus}`}>{saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save error" : "Saved"}</div>
       </header>
 
       {rescue && (
         <div className="mx-rescue">
-          <div><strong>This board looks emptier than the last version saved from this browser</strong> ({new Date(rescue.at).toLocaleString()} — {rescue.doc.pods.length} subteams, {rescue.doc.rows.length} functions). An out-of-date tab may have overwritten it.</div>
+          <div><strong>This board looks emptier than the last version saved from this browser</strong> ({new Date(rescue.at).toLocaleString()}). An out-of-date tab may have overwritten it.</div>
           <button className="tb tb-primary" onClick={() => { setHistory((h) => [...h, docRef.current]); setDoc(rescue.doc); setRescue(null); }}>Restore that version</button>
-          <button className="tb" onClick={() => { writeBackup(chartId, docRef.current); try { if (weight(docRef.current) === 0) localStorage.removeItem(bkKey(chartId)); } catch { /* ignore */ } setRescue(null); }}>Keep what's here</button>
+          <button className="tb" onClick={() => { try { localStorage.removeItem(bkKey(chartId)); } catch { /* ignore */ } setRescue(null); }}>Keep what's here</button>
         </div>
       )}
       <div className="mx-sub">
-        Each <strong>subteam</strong> (a column) is staffed from several <strong>functions</strong> (the rows) at once — e.g. a PM from product, dedicated engineers, someone from account management. People come from <strong>{source.name || "your functional org"}</strong>; their reporting line stays there.
+        Set up <strong>teams and subteams</strong> across the top and down the side however you like, then put people where they meet. People come from <strong>{source.name || "your functional org"}</strong>; their reporting line stays there.
       </div>
 
       <div className="mx-scroll">
-        <div className="mx-grid" style={{ gridTemplateColumns: tracks }}>
-          <div className="mx-corner" style={{ gridColumn: 1, gridRow: 1 }}>
-            <span className="mx-axis mx-axis-col">Subteams →</span>
-            <button className="mx-addbtn mx-addbtn-sm mx-corner-add" onClick={addPod}><Plus size={14} strokeWidth={1.8} /> Add subteam</button>
-            <span className="mx-axis mx-axis-row">Staffed by ↓</span>
+        <div className="mx-grid" style={{ gridTemplateColumns: tracks.join(" ") }}>
+          <div className="mx-corner" style={{ gridColumn: "1 / 3", gridRow: "1 / 3" }}>
+            <span className="mx-axis mx-axis-col">team → subteam →</span>
+            <span className="mx-axis mx-axis-row">team ↓ · subteam ↓</span>
           </div>
-          {PODS.map((pod, i) => { const n = podStaffing(pod.id); return (
-            <div className="mx-pod" key={pod.id} style={{ gridColumn: i + 2, gridRow: 1 }}>
-              <div className="mx-fn-row">
-                <InlineEdit className="mx-sub-name" value={pod.name} placeholder="Name this subteam" autoEdit={editing?.type === "pod" && editing.id === pod.id} onDone={() => setEditing(null)} onCommit={(v) => rename("pods", pod.id, "name", v)} />
-                <Tools what="this subteam" prevIcon={<ChevronLeft size={13} />} nextIcon={<ChevronRight size={13} />} canPrev={i > 0} canNext={i < PODS.length - 1} onPrev={() => moveIn("pods", pod.id, -1)} onNext={() => moveIn("pods", pod.id, 1)} onRemove={() => removePod(pod)} />
+
+          {topPlan.map(({ t, ti, start, end, lanes, color }) => (
+            <React.Fragment key={t.id}>
+              <div className={`mx-team mx-team-top ${ti ? "mx-edge-l" : ""}`} style={{ gridColumn: `${start} / ${end}`, gridRow: t.subs.length ? 1 : "1 / 3", "--c": color }}>
+                <div className="mx-fn-bar" />{headCell({ axis: "top", t, color, idx: ti, count: TOP.length })}
               </div>
-              <button className={`mx-sublead ${pod.leadRef ? "" : "mx-sublead-empty"}`} onClick={(e) => openPicker(e, { mode: "podLead", podId: pod.id })}>
-                <Crown size={12} strokeWidth={pod.leadRef ? 1.8 : 1.6} /><span>{pod.leadRef ? <><strong>{displayName(pod.leadRef)}</strong> leads</> : "set a lead"}</span>
-                <span className="mx-rel">{n ? `staffed from ${n} function${n === 1 ? "" : "s"}` : ""}</span>
-              </button>
-            </div>); })}
-          <div className="mx-addfn" style={{ gridColumn: lastCol, gridRow: 1 }}>
-            <button className="mx-addbtn" onClick={addPod}><Plus size={15} strokeWidth={1.8} /> Add subteam</button>
-            {PODS.length === 0 && <span className="mx-hint">e.g. “Customer Operations”, “Field Engineering”</span>}
+              {t.subs.length > 0 && lanes.map(({ lane, col: c }, i) => (
+                <div key={lane.id} className={`mx-subhead ${ti && i === 0 ? "mx-edge-l" : ""}`} style={{ gridColumn: c, gridRow: 2, "--c": color }}>{headCell({ axis: "top", t, sub: lane.sub, color, idx: i, count: lanes.length })}</div>
+              ))}
+            </React.Fragment>
+          ))}
+          <div className="mx-addfn" style={{ gridColumn: lastCol, gridRow: "1 / 3" }}>
+            <button className="mx-addbtn" onClick={() => addTeam("top")}><Plus size={15} strokeWidth={1.8} /> Team</button>
+            {TOP.length === 0 && <span className="mx-hint">Add the teams that go across the top</span>}
           </div>
-          {body}
+          {lastRow > 3 && <div className="mx-fill" style={{ gridColumn: lastCol, gridRow: `3 / ${lastRow}` }} />}
+
+          {leftPlan.map(({ t, ti, start, end, lanes, color }) => (
+            <React.Fragment key={t.id}>
+              <div className={`mx-team mx-team-left ${ti ? "mx-edge-t" : ""}`} style={{ gridColumn: t.subs.length ? 1 : "1 / 3", gridRow: `${start} / ${end}`, "--c": color }}>{headCell({ axis: "left", t, color, idx: ti, count: LEFT.length })}</div>
+              {lanes.map(({ lane, row: r }, i) => (
+                <React.Fragment key={lane.id}>
+                  {lane.sub && <div className={`mx-subhead mx-subhead-left ${ti && i === 0 ? "mx-edge-t" : ""}`} style={{ gridColumn: 2, gridRow: r, "--c": color }}>{headCell({ axis: "left", t, sub: lane.sub, color, idx: i, count: lanes.length })}</div>}
+                  {topPlan.flatMap(({ lanes: tl, ti: tti }) => tl.map((x, xi) => ({ ...x, edge: tti > 0 && xi === 0 }))).map(({ lane: tLane, col: c, edge }) => {
+                    const k = ck(lane.id, tLane.id); const chips = doc.cells[k] || [];
+                    return (
+                      <div key={k} className={`mx-cell ${overKey === k ? "mx-cell-over" : ""} ${chips.length ? "mx-cell-linked" : "mx-cell-empty"} ${edge ? "mx-edge-l" : ""} ${ti && i === 0 ? "mx-edge-t" : ""}`} style={{ gridColumn: c, gridRow: r, "--c": color }} {...dropProps(k)}>
+                        {chips.length > 0 && <div className="mx-chiprow">{chips.map((ch) => renderChip(k, color, ch))}</div>}
+                        <button className="mx-add" onClick={(e) => openPicker(e, { mode: "cell", leftId: lane.id, topId: tLane.id })} title={`${laneName(lane)} × ${laneName(tLane)}`}><Plus size={14} strokeWidth={1.8} />{chips.length ? "" : <span>Add people</span>}</button>
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+            </React.Fragment>
+          ))}
+          <div className="mx-addrow" style={{ gridColumn: `1 / ${lastCol + 1}`, gridRow: lastRow }}>
+            <button className="mx-addbtn" onClick={() => addTeam("left")}><Plus size={15} strokeWidth={1.8} /> Team</button>
+            {LEFT.length === 0 && <span className="mx-hint">Add the teams that go down the side</span>}
+          </div>
         </div>
       </div>
 
@@ -425,8 +402,7 @@ export default function MatrixBoard({ chartId, chartName, onBack, onRenamed }) {
       {chipMenu && (() => {
         const chip = (doc.cells[chipMenu.key] || []).find((c) => c.id === chipMenu.chipId); if (!chip) return null;
         return (<ChipMenu chip={chip} p={person(chip.ref)} rect={chipMenu.rect} sourceName={source.name}
-          onRole={(v) => setRole(chipMenu.key, chip.id, v)}
-          onLead={chip.ref ? () => { apply((d) => { const x = d.pods.find((y) => y.id === chipMenu.podId); if (x) x.leadRef = chip.ref; return d; }); setChipMenu(null); } : null}
+          onRole={(v) => setRole(chipMenu.key, chip.id, v)} onLead={null}
           onRemove={() => { removeChip(chipMenu.key, chip.id); setChipMenu(null); }}
           onClose={() => setChipMenu(null)} />);
       })()}
@@ -460,22 +436,26 @@ function PeoplePicker({ ctx, rect, source, onPick, onClose }) {
   const ql = q.trim().toLowerCase();
   const match = (p) => !ql || p.name.toLowerCase().includes(ql) || p.title.toLowerCase().includes(ql) || p.team.toLowerCase().includes(ql);
   const usableP = (p) => p && p.name && !/^\?+$/.test(p.name);
-  const org = useMemo(() => (ctx.anchor ? source.orgOf(ctx.anchor.id) : new Set()), [ctx.anchor, source]);
+  const anchors = ctx.anchors || (ctx.anchor ? [ctx.anchor] : []);
+  const org = useMemo(() => { const all = new Set(); anchors.forEach((an) => source.orgOf(an.id).forEach((x) => all.add(x))); return all; }, [anchors.map((x) => x.id).join(","), source]); // eslint-disable-line
   const isDone = (p) => added.has(p.id) || (ctx.taken && ctx.taken.has(p.id));
   // the anchor's org, laid out the way it's actually organised: the head, then each of their
   // direct reports' teams — so "engineers from one of Nick's teams" is a glance, not a search
   const sections = useMemo(() => {
-    if (!ctx.anchor) return [];
-    const head = source.byId.get(ctx.anchor.id); const out = [];
-    const direct = source.kidsOf(ctx.anchor.id).map((id) => source.byId.get(id)).filter(usableP);
-    const solo = [head, ...direct.filter((d) => !source.kidsOf(d.id).length)].filter(usableP).filter(match);
-    if (solo.length) out.push({ key: "_solo", label: ctx.anchor.label, people: solo });
-    direct.filter((d) => source.kidsOf(d.id).length).forEach((d) => {
-      const people = [...source.orgOf(d.id)].map((id) => source.byId.get(id)).filter(usableP).filter(match);
-      if (people.length) out.push({ key: d.id, label: `${d.name}'s team`, sub: d.title, people, team: true });
+    const out = []; const seen = new Set();
+    const fresh = (people) => people.filter((p) => usableP(p) && match(p) && !seen.has(p.id)).map((p) => { seen.add(p.id); return p; });
+    anchors.forEach((an) => {
+      const head = source.byId.get(an.id);
+      const direct = source.kidsOf(an.id).map((id) => source.byId.get(id)).filter(usableP);
+      const solo = fresh([head, ...direct.filter((d) => !source.kidsOf(d.id).length)]);
+      if (solo.length) out.push({ key: an.id + "_solo", label: an.label, people: solo });
+      direct.filter((d) => source.kidsOf(d.id).length).forEach((d) => {
+        const people = fresh([...source.orgOf(d.id)].map((id) => source.byId.get(id)));
+        if (people.length) out.push({ key: an.id + d.id, label: `${d.name}'s team`, people, team: true });
+      });
     });
-    return ctx.byTeam ? out : [{ key: "_all", label: ctx.anchor.label, people: out.flatMap((x) => x.people).slice(0, 40) }].filter((x) => x.people.length);
-  }, [ctx.anchor, ctx.byTeam, source, ql]); // eslint-disable-line
+    return out;
+  }, [anchors.map((x) => x.id).join(","), source, ql]); // eslint-disable-line
   const rest = ql ? source.list.filter((p) => usableP(p) && match(p) && !org.has(p.id)).slice(0, 12) : [];
   const pick = (p) => { onPick({ ref: p.id, name: p.name }); if (ctx.multi) setAdded((s) => new Set(s).add(p.id)); };
   const addAll = (people) => { const todo = people.filter((p) => !isDone(p)); todo.forEach((p) => onPick({ ref: p.id, name: p.name })); setAdded((s) => { const n = new Set(s); todo.forEach((p) => n.add(p.id)); return n; }); };
@@ -501,7 +481,7 @@ function PeoplePicker({ ctx, rect, source, onPick, onClose }) {
             {sec.people.map((p) => <Row key={p.id} p={p} />)}
           </div>
         ))}
-        {rest.length > 0 && <div className="pk-group">{ctx.anchor ? "Everyone else" : "People"}</div>}
+        {rest.length > 0 && <div className="pk-group">{anchors.length ? "Everyone else" : "People"}</div>}
         {rest.map((p) => <Row key={p.id} p={p} />)}
         {source.ready && nothing && <div className="pk-empty">{ql ? `No one matches “${q}”.` : ctx.hint || "Type a name to search the functional org."}</div>}
         {ctx.allowPlaceholder && ql && (<button className="pk-row pk-ghost" onClick={() => { onPick({ ref: null, name: q.trim() }); setQ(""); }}><Plus size={14} /><span className="pk-text"><strong>{ctx.placeholderLabel ? ctx.placeholderLabel(q.trim()) : `Add “${q.trim()}” as an open role`}</strong><em>not linked to the functional org</em></span></button>)}
@@ -553,7 +533,7 @@ const mxStyles = `
 .mx-scroll { overflow: auto; max-height: calc(100vh - 210px); border: 1px solid var(--line); border-radius: 12px; background: #fbf8f0; box-shadow: var(--shadow); }
 .mx-grid { display: grid; min-width: max-content; }
 .mx-grid > div { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.mx-corner { position: sticky; left: 0; z-index: 4; background: #f3eee1; display: flex; flex-direction: column; justify-content: space-between; padding: 12px 14px; min-height: 96px; }
+.mx-corner { position: sticky; left: 0; z-index: 5; background: #f3eee1; display: flex; flex-direction: column; justify-content: space-between; padding: 12px 14px; min-height: 96px; }
 .mx-axis { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); } .mx-axis-col { align-self: flex-end; }
 .mx-fn { background: #fffdf7; padding: 0 12px 12px; }
 .mx-fn-bar { height: 4px; background: var(--c); margin: 0 -12px 10px; }
@@ -588,7 +568,7 @@ const mxStyles = `
 .mx-addsub { background: #f3eee1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 10px 6px; text-align: center; }
 .mx-addbtn-sm { padding: 7px 11px; font-size: 12.5px; position: static; }
 .mx-cell-linked { background: color-mix(in srgb, var(--c) 4%, #fffdf8); }
-.mx-cell { padding: 10px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 7px; min-height: 84px; background: #fffdf8; transition: background .12s, box-shadow .12s; }
+.mx-cell { padding: 10px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 7px; min-height: 66px; background: #fffdf8; transition: background .12s, box-shadow .12s; }
 .mx-cell-over { background: color-mix(in srgb, var(--c) 9%, #fffdf8); box-shadow: inset 0 0 0 2px var(--c); }
 .mx-chip { display: flex; align-items: center; gap: 8px; max-width: 100%; text-align: left; padding: 5px 11px 5px 5px; border: 1px solid var(--line); border-radius: 999px; background: #fff; cursor: grab; font-family: inherit; color: var(--ink); transition: box-shadow .12s, border-color .12s, transform .12s; }
 .mx-chip:hover { border-color: var(--c); box-shadow: 0 2px 10px -4px rgba(26,22,18,.35); transform: translateY(-1px); }
@@ -605,6 +585,31 @@ const mxStyles = `
 .mx-hint { font-family: 'Iowan Old Style', Georgia, serif; font-size: 13px; font-style: italic; color: var(--ink-faint); }
 
 .mx-corner-add { align-self: flex-start; background: #fffdf7; }
+.mx-team { background: #fffdf7; padding: 0 12px 12px; }
+.mx-team-top { padding-top: 0; } .mx-team-left { padding: 14px 12px 12px 16px; box-shadow: inset 4px 0 0 var(--c); background: #f7f3e8; position: sticky; left: 0; z-index: 3; }
+.mx-team:hover .mx-tools, .mx-subhead:hover .mx-tools { opacity: 1; }
+.mx-team-name { flex: 1; min-width: 0; font-family: 'Iowan Old Style', Georgia, serif; font-size: 17px; font-weight: 600; letter-spacing: -0.005em; line-height: 1.25; cursor: text; border-radius: 4px; padding: 2px 4px; margin: -2px -4px; }
+.mx-team-name:hover { background: var(--paper-2); }
+.mx-subhead { background: color-mix(in srgb, var(--c) 5%, #fffdf8); padding: 10px 12px; box-shadow: inset 0 2px 0 color-mix(in srgb, var(--c) 40%, transparent); }
+.mx-subhead .mx-sub-name { font-size: 14.5px; }
+.mx-subhead-left { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--c) 40%, transparent); background: #faf6ec; position: sticky; left: 204px; z-index: 2; }
+.mx-subhead-none { display: flex; align-items: center; }
+.mx-none { font-family: 'Iowan Old Style', Georgia, serif; font-size: 12px; font-style: italic; color: var(--ink-faint); }
+.mx-person { margin-top: 7px; display: inline-flex; align-items: center; gap: 8px; max-width: 100%; text-align: left; border: 1px solid transparent; background: transparent; border-radius: 9px; padding: 3px 6px; margin-left: -6px; cursor: pointer; font-family: inherit; color: var(--ink); }
+.mx-person:hover { background: var(--paper-2); }
+.mx-person-empty { color: var(--ink-faint); font-size: 11.5px; font-style: italic; border: 1px dashed var(--rule); margin-left: 0; padding: 3px 9px; opacity: 0; transition: opacity .12s; }
+.mx-team:hover .mx-person-empty, .mx-subhead:hover .mx-person-empty { opacity: 1; }
+.mx-addcell { background: #f3eee1; display: grid; place-items: center; padding: 6px; }
+.mx-addcell-left { place-items: center start; padding: 7px 10px; position: sticky; left: 176px; z-index: 2; }
+.mx-plus { display: inline-flex; align-items: center; gap: 5px; height: 30px; min-width: 30px; justify-content: center; padding: 0 8px; border: 1px dashed var(--ink-faint); border-radius: 999px; background: transparent; color: var(--ink-soft); cursor: pointer; font-family: 'Iowan Old Style', Georgia, serif; font-size: 12.5px; font-style: italic; }
+.mx-plus:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); border-style: solid; }
+.mx-fn-row { position: relative; }
+.mx-team .mx-tools, .mx-subhead .mx-tools { position: absolute; top: -3px; right: -6px; background: #fffdf7; border: 1px solid var(--line); border-radius: 7px; padding: 1px; box-shadow: 0 2px 6px rgba(40,30,10,.08); pointer-events: none; }
+.mx-team:hover > .mx-fn-row .mx-tools, .mx-subhead:hover .mx-tools { pointer-events: auto; }
+.mx-plus-sub { margin-top: 9px; height: 25px; font-size: 12px; opacity: .55; display: flex; width: max-content; }
+.mx-team:hover .mx-plus-sub { opacity: 1; }
+.mx-team-top .mx-plus-sub { position: absolute; right: 12px; bottom: 10px; margin: 0; } .mx-team-top { position: relative; padding-bottom: 14px; min-height: 74px; }
+.mx-grid > .mx-edge-l { border-left: 2px solid #cfc6b1; } .mx-grid > .mx-edge-t { border-top: 2px solid #cfc6b1; }
 .mx-rescue { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding: 12px 14px; border: 1px solid #b8442a; border-radius: 10px; background: #fbeee9; font-family: 'Iowan Old Style', Georgia, serif; font-size: 13.5px; line-height: 1.5; }
 .mx-rescue > div { flex: 1; min-width: 280px; }
 .mx-pod { background: #fffdf7; padding: 14px 14px 12px; box-shadow: inset 0 3px 0 var(--ink); }
