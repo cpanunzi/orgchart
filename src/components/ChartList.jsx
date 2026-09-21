@@ -16,10 +16,25 @@ const seedTree = () => ({
 // The list query reads it back as text via `archived:tree->>archived`.
 const isArchived = (c) => c.archived === true || c.archived === "true";
 
+// A team matrix is a chart whose JSON carries kind:"matrix" + the functional chart it pulls
+// its people from. It opens in the same editor, which adds the "add people from the org" picker.
+const isMatrix = (c) => c.kind === "matrix";
+const rid = () => Math.random().toString(36).slice(2, 10);
+const matrixSeed = (name, sourceChartId) => ({
+  id: "root", name: name || "New team", title: "Team matrix", team: "",
+  kind: "matrix", sourceChartId, group: true, collapsed: false,
+  children: ["Product", "Engineering", "Go-to-market"].map((label) => ({
+    id: rid(), name: label, title: "", team: "", group: true, stack: true, collapsed: false, children: [],
+  })),
+});
+
 export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [showArchive, setShowArchive] = useState(false);
+  const [creatingMatrix, setCreatingMatrix] = useState(false);
+  const [matrixName, setMatrixName] = useState("");
+  const [matrixSource, setMatrixSource] = useState("");
   const [dragId, setDragId] = useState(null);     // chart being dragged
   const [overZone, setOverZone] = useState(null); // "archive" | "active" while hovering a drop zone
 
@@ -41,6 +56,13 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
       setNewName("");
       window.location.hash = data.id;
     }
+  };
+
+  const handleCreateMatrix = async () => {
+    if (!matrixSource) { alert("Pick the functional org to pull people from."); return; }
+    const nm = matrixName.trim() || "New team";
+    const data = await create(nm, matrixSeed(nm, matrixSource));
+    if (data) { setCreatingMatrix(false); setMatrixName(""); window.location.hash = data.id; }
   };
 
   const handleDuplicate = async (chart) => {
@@ -75,6 +97,11 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
 
   const active = charts.filter((c) => !isArchived(c));
   const archived = charts.filter(isArchived);
+  const functional = active.filter((c) => !isMatrix(c));
+  const matrices = active.filter(isMatrix);
+  // any functional chart can be a people source (active ones first); default to the one called "Final"
+  const sources = [...functional, ...archived.filter((c) => !isMatrix(c))];
+  const defaultSourceId = (sources.find((c) => (c.name || "").trim().toLowerCase() === "final") || sources[0] || {}).id || "";
   const dragged = dragId ? charts.find((c) => c.id === dragId) : null;
 
   // drop-zone handlers: drop an active chart on the Archive to file it, an archived one on
@@ -104,7 +131,7 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
     >
       <button className="chart-main" onClick={() => onOpen(chart.id)}>
         <div className="chart-name">{chart.name}</div>
-        <div className="chart-meta">edited {formatDate(chart.updated_at)}</div>
+        <div className="chart-meta">{isMatrix(chart) ? "team matrix · " : ""}edited {formatDate(chart.updated_at)}</div>
       </button>
       <div className="chart-actions">
         {inArchive ? (
@@ -149,7 +176,7 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
 
       <div className="list-wrap">
         <div className="list-head">
-          <h2>Charts</h2>
+          <h2>Functional orgs</h2>
           <button className="tb tb-primary" onClick={() => setCreating(true)}>
             <Plus size={14} strokeWidth={1.8} /> New chart
           </button>
@@ -180,12 +207,52 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
           </div>
         )}
 
-        <ul className={`chart-list zone ${restoreArmed ? "zone-armed" : ""} ${overZone === "active" ? "zone-over" : ""}`} {...zoneProps("active")}>
-          {active.map((c) => row(c, false))}
-          {active.length === 0 && archived.length > 0 && (
-            <li className="zone-empty">Everything's archived — drag a chart here to bring it back.</li>
+        <div className={`active-zone zone ${restoreArmed ? "zone-armed" : ""} ${overZone === "active" ? "zone-over" : ""}`} {...zoneProps("active")}>
+          <ul className="chart-list">
+            {functional.map((c) => row(c, false))}
+            {functional.length === 0 && charts.length > 0 && (
+              <li className="zone-empty">No functional orgs here — drag one back from the Archive.</li>
+            )}
+          </ul>
+
+          <div className="list-head list-head-2">
+            <div>
+              <h2>Team matrices</h2>
+              <div className="list-sub">Cross-functional teams, built from the people in your functional org.</div>
+            </div>
+            <button className="tb tb-primary" disabled={!sources.length}
+              onClick={() => { setCreatingMatrix(true); setMatrixSource(defaultSourceId); }}>
+              <Plus size={14} strokeWidth={1.8} /> New team matrix
+            </button>
+          </div>
+
+          {creatingMatrix && (
+            <div className="new-row new-row-matrix">
+              <input autoFocus className="new-input" value={matrixName}
+                onChange={(e) => setMatrixName(e.target.value)}
+                placeholder="Team name — e.g. Connect, Cloud, Payments squad"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleCreateMatrix();
+                  if (e.key === "Escape") { setCreatingMatrix(false); setMatrixName(""); }
+                }} />
+              <label className="src-pick">
+                <span>People from</span>
+                <select className="src-select" value={matrixSource} onChange={(e) => setMatrixSource(e.target.value)}>
+                  {sources.map((c) => <option key={c.id} value={c.id}>{c.name}{isArchived(c) ? " (archived)" : ""}</option>)}
+                </select>
+              </label>
+              <button className="tb tb-primary" onClick={handleCreateMatrix}>Create</button>
+              <button className="tb" onClick={() => { setCreatingMatrix(false); setMatrixName(""); }}>Cancel</button>
+            </div>
           )}
-        </ul>
+
+          <ul className="chart-list">
+            {matrices.map((c) => row(c, false))}
+            {matrices.length === 0 && !creatingMatrix && (
+              <li className="zone-empty">No team matrices yet — create one and pull people in from your functional org.</li>
+            )}
+          </ul>
+        </div>
 
         {(archived.length > 0 || archiveArmed) && (
           <section className={`archive zone ${archiveArmed ? "zone-armed" : ""} ${overZone === "archive" ? "zone-over" : ""}`} {...zoneProps("archive")}>
@@ -297,8 +364,15 @@ const listStyles = `
 
 /* drop zones: the main list (restore) and the Archive (file away) */
 .zone { border-radius: 4px; transition: box-shadow 0.15s ease, background 0.15s ease, border-color 0.15s ease; }
-.chart-list.zone-armed { box-shadow: 0 0 0 2px var(--rule-soft); }
-.chart-list.zone-over { box-shadow: 0 0 0 2px var(--accent); background: rgba(184, 68, 42, 0.04); }
+.active-zone.zone-armed { box-shadow: 0 0 0 2px var(--rule-soft); }
+.active-zone.zone-over { box-shadow: 0 0 0 2px var(--accent); background: rgba(184, 68, 42, 0.04); }
+.list-head-2 { margin-top: 40px; align-items: flex-end; }
+.list-sub { font-family: 'Iowan Old Style', Georgia, serif; font-size: 12.5px; font-style: italic; color: var(--ink-faint); margin-top: 4px; }
+.new-row-matrix { flex-wrap: wrap; align-items: center; }
+.new-row-matrix .new-input { min-width: 220px; }
+.src-pick { display: flex; align-items: center; gap: 6px; font-family: 'Iowan Old Style', Georgia, serif; font-size: 12.5px; font-style: italic; color: var(--ink-soft); }
+.src-select { font-family: inherit; font-size: 13px; font-style: normal; padding: 7px 8px; border: 1px solid var(--rule); background: #fffdf6; color: var(--ink); outline: none; max-width: 220px; }
+.src-select:focus { border-color: var(--ink); }
 .zone-empty {
   padding: 18px; text-align: center; list-style: none;
   font-family: 'Iowan Old Style', Georgia, serif; font-size: 13px; font-style: italic;

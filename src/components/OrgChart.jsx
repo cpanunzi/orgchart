@@ -228,6 +228,9 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
   // Look-up sidebar: search a person, see everyone above/below them and every dotted line.
   const [lookupOpen, setLookupOpen] = useState(false);
   const [lookupId, setLookupId] = useState(null);
+  // Team matrix: people are pulled from a functional chart (tree.sourceChartId) and stay linked to it.
+  const [sourcePeople, setSourcePeople] = useState([]);
+  const [sourceName, setSourceName] = useState("");
   const canvasRef = useRef(null);   // the .canvas viewport
   const treeRef = useRef(null);     // the natural-size tree layer (for Fit)
   const panRef = useRef(null);      // in-flight pan drag state
@@ -261,6 +264,35 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     })();
     return () => { cancelled = true; };
   }, [chartId]);
+
+  // Team matrix: load the functional chart this matrix draws its people from, and refresh the
+  // linked cards (name / functional title / functional manager) so they never go stale. The
+  // card's own `title` is left alone — it's their role in THIS team.
+  const isMatrix = tree?.kind === "matrix";
+  const sourceChartId = tree?.sourceChartId || null;
+  useEffect(() => {
+    if (!isMatrix || !sourceChartId) { setSourcePeople([]); setSourceName(""); return; }
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase.from("charts").select("name, tree").eq("id", sourceChartId).single();
+      if (cancelled || error || !data) return;
+      const ppl = flatten(data.tree);
+      setSourcePeople(ppl); setSourceName(data.name);
+      const byId = new Map(ppl.map((x) => [x.id, x]));
+      setTree((prev) => {
+        if (!prev) return prev;
+        let changed = false; const next = cloneTree(prev);
+        walk(next, (n) => {
+          const src = n.ref && byId.get(n.ref); if (!src) return;
+          if (n.name !== src.name || n.refTitle !== src.title || n.refManager !== src.manager) {
+            n.name = src.name; n.refTitle = src.title; n.refManager = src.manager; changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [isMatrix, sourceChartId]);
 
   // realtime subscription for collaborative editing
   useEffect(() => {
@@ -339,6 +371,13 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
     apply((prev) => addChild(prev, parentId, child));
     setSelectedId(child.id);
     setTimeout(() => setEditingField({ id: child.id, field: "name" }), 50);
+  };
+  // Team matrix: add a person from the functional org under `parentId`, linked by `ref`.
+  const handleAddFromOrg = (parentId, personId) => {
+    const src = sourcePeople.find((x) => x.id === personId); if (!src) return;
+    const child = { id: uid(), name: src.name, title: src.title || "", team: "", ref: src.id,
+      refTitle: src.title || "", refManager: src.manager || "", collapsed: false, children: [] };
+    apply((prev) => addChild(prev, parentId, child));
   };
   const handleDelete = (id) => { if (id === "root") return; apply((prev) => removeNode(prev, id)); if (selectedId === id) setSelectedId(null); };
   const handleToggle = (id) => {
@@ -449,6 +488,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
 
   const links = useMemo(() => (tree ? flattenLinks(tree) : []), [tree]);
   const people = useMemo(() => (tree ? flatten(tree) : []), [tree]); // everyone, for the link-by-name picker
+  const usedRefs = useMemo(() => { const out = []; if (tree) walk(tree, (n) => { if (n.ref) out.push(n.ref); }); return out; }, [tree]);
   const palette = useMemo(() => mergePalette(tree), [tree]);
 
   // ---------- drill-down (focus on one team) ----------
@@ -643,6 +683,11 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           <button className={`tb ${lookupOpen ? "tb-on" : ""}`} onClick={() => setLookupOpen((v) => !v)} title="Look up a person — their reporting line, who they manage, and every dotted line (⌘K)">
             <Search size={14} strokeWidth={1.5} /> Look up
           </button>
+          {isMatrix && (
+            <button className="tb tb-primary" onClick={() => setSelectedId((cur) => cur || "root")} title="Pick a section or person, then search the functional org to add people under it">
+              <Plus size={14} strokeWidth={1.8} /> Add people
+            </button>
+          )}
           <div className="tb-sep" />
           <button className="tb" onClick={undo} disabled={!history.length}><RotateCcw size={14} strokeWidth={1.5} /> Undo</button>
           <button className="tb" onClick={() => apply(expandAll)}>Expand all</button>
@@ -662,6 +707,7 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
       </header>
 
       <div className="meta">
+        {isMatrix && (<><span className="matrix-tag">Team matrix</span><span>people from <strong>{sourceName || "…"}</strong></span><span className="dot">·</span></>)}
         <span><strong>{stats.total}</strong> people</span>
         <span className="dot">·</span>
         <span><strong>{stats.teams}</strong> teams</span>
@@ -763,6 +809,8 @@ export default function OrgChart({ chartId, chartName, onBack, onRenamed, onDele
           pos={selectedPos}
           onShift={handleShift}
           inbound={inboundForSelected}
+          isMatrix={isMatrix} sourcePeople={sourcePeople} sourceName={sourceName}
+          usedRefs={usedRefs} onAddFromOrg={handleAddFromOrg}
         />
       )}
     </div>
@@ -843,6 +891,9 @@ function Node(props) {
         editing={editingField?.id === node.id && editingField?.field === "title"}
         setEditing={setEditingField} onChange={onEdit}
         className="title" placeholder="Title" />
+      {node.ref && node.refManager && (
+        <div className="card-ref" title={`In the functional org: ${node.refTitle || "—"}, reports to ${node.refManager}`}>↳ {node.refManager}</div>
+      )}
 
       <div className="card-foot">
         <EditableField value={node.team} field="team" id={node.id}
@@ -1079,7 +1130,7 @@ function LegendLabel({ value, onCommit }) {
 }
 
 // ---------- selection inspector (accent + dotted-line editing) ----------
-function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus, people, onAddLink, publicView, pos, onShift, inbound = [] }) {
+function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLink, onToggleGroup, onSetStack, palette, onFocus, people, onAddLink, publicView, pos, onShift, inbound = [], isMatrix, sourcePeople = [], sourceName, usedRefs = [], onAddFromOrg }) {
   const dotted = node.dotted || [];
   const current = node.accent || "slate";
   const isGroup = !!node.group;
@@ -1090,6 +1141,15 @@ function Inspector({ node, nameOf, onClose, onSetAccent, onStartLink, onRemoveLi
         <span className="insp-title">{node.name || "Untitled"}</span>
         <button className="x" onClick={onClose} title="Close">×</button>
       </div>
+
+      {isMatrix && (
+        <div className="insp-sec">
+          <div className="insp-label">Add people from {sourceName || "the functional org"}</div>
+          <LinkSearch people={sourcePeople} excludeIds={usedRefs} placeholder="Search the functional org…"
+            onPick={(pid) => onAddFromOrg(node.id, pid)} />
+          <div className="insp-hint">Added under “{node.name || "this card"}” and linked to the functional chart, so their name and manager stay in sync. The title is yours to edit — it's their role in this team.</div>
+        </div>
+      )}
 
       {pos && pos.count > 1 && (
         <div className="insp-sec">
@@ -1275,7 +1335,7 @@ function LookupPanel({ tree, links, nameOf, initialId, onPick, onShow, onClose }
 
 // Search everyone in the chart by name/title/team and pick one to link to.
 // Works regardless of what's on screen — the whole point when drilled into a team.
-function LinkSearch({ people, excludeIds, onPick }) {
+function LinkSearch({ people, excludeIds, onPick, placeholder = "Add dotted line to… type a name" }) {
   const [q, setQ] = useState("");
   const ex = new Set(excludeIds);
   const ql = q.trim().toLowerCase();
@@ -1289,7 +1349,7 @@ function LinkSearch({ people, excludeIds, onPick }) {
   const pick = (id) => { onPick(id); setQ(""); };
   return (
     <div className="link-search">
-      <input className="link-search-input" placeholder="Add dotted line to… type a name" value={q}
+      <input className="link-search-input" placeholder={placeholder} value={q}
         onChange={(e) => setQ(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && results[0]) { e.preventDefault(); pick(results[0].id); }
@@ -1679,6 +1739,8 @@ const chartStyles = `
 .card-band-head:hover { transform: none; box-shadow: none; }
 .card-band-head .card-rail { border-radius: 3px; }
 .card-band-head .name { font-size: 17px; }
+/* section headers stay quiet: empty title/team placeholders only appear on hover or when selected */
+.card-band-head:not(:hover):not(.card-sel) .field-empty { display: none; }
 
 /* ---------- matrix: link-drawing banner ---------- */
 .link-banner {
@@ -1753,6 +1815,9 @@ const chartStyles = `
 .link-x:hover { color: var(--accent); background: var(--paper-2); }
 .insp-add { margin-top: 10px; width: 100%; justify-content: center; }
 .insp-secondary { font-size: 11.5px; color: var(--ink-soft); margin-top: 8px; }
+.card-ref { font-size: 11px; color: var(--ink-faint); margin: -2px 0 5px 19px; font-style: italic; }
+.matrix-tag { font-style: normal; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--paper); background: var(--ink); padding: 2px 7px; border-radius: 3px; }
 .link-search { margin-top: 10px; }
 .link-search-input {
   width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12.5px;
