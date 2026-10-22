@@ -275,10 +275,10 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
 
   // ---- actions -------------------------------------------------------------------------------
   const withContents = (ids) => { const all = docRef.current.items; const out = new Set(ids); ids.forEach((id) => { const it = all.find((i) => i.id === id); if (it?.type === "frame") contentsOf(id, all).forEach((c) => out.add(c)); }); return [...out]; };
-  const moveIds = (ids, dx, dy, commit) => { const full = withContents(ids); apply((d) => { d.items.forEach((i) => { if (full.includes(i.id)) { i.x = commit ? snap(i.x + dx) : i.x + dx; i.y = commit ? snap(i.y + dy) : i.y + dy; } }); return d; }); };
+  const moveIds = (ids, dx, dy, commit) => { const full = withContents(ids); apply((d) => { d.items.forEach((i) => { if (full.includes(i.id)) { i.x = commit ? snap(i.x + dx) : i.x + dx; i.y = commit ? snap(i.y + dy) : i.y + dy; } }); if (commit) d.items = reflow(d.items); return d; }); };
   const centreOfView = () => { const r = cvRef.current.getBoundingClientRect(); return toWorld(r.left + r.width / 2 - CARD_W / 2, r.top + r.height / 2 - CARD_H / 2); };
   const freeSpot = (p) => { const taken = (x, y) => (docRef.current.items || []).some((i) => i.type === "card" && Math.abs(i.x - x) < 24 && Math.abs(i.y - y) < 24); let { x, y } = p; x = snap(x); y = snap(y); while (taken(x, y)) { x += 24; y += 24; } return { x, y }; };
-  const addCard = (pick, at, extra = {}) => { const id = rid(); const p = freeSpot(at || centreOfView()); apply((d) => { d.items.push({ id, type: "card", x: p.x, y: p.y, ref: pick.ref || null, name: pick.ref ? "" : (pick.name || ""), title: "", cat: pick.ref ? "auto" : "hire", ...extra }); return d; }); setSel(new Set([id])); return id; };
+  const addCard = (pick, at, extra = {}) => { const id = rid(); const p = freeSpot(at || centreOfView()); apply((d) => { d.items.push({ id, type: "card", x: p.x, y: p.y, ref: pick.ref || null, name: pick.ref ? "" : (pick.name || ""), title: "", cat: pick.ref ? "auto" : "hire", ...extra }); d.items = reflow(d.items); return d; }); setSel(new Set([id])); return id; };
   const addFrame = () => { const id = rid(); const p = centreOfView(); apply((d) => {
     const box = { id, type: "frame", x: snap(p.x - 60), y: snap(p.y - 60), w: 320, h: 240, label: "", tint: TINTS[d.items.filter((i) => i.type === "frame").length % TINTS.length] };
     const others = d.items.filter((i) => i.type === "frame").map(rectOf);
@@ -287,8 +287,8 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     d.items.push(box); return d; }); setSel(new Set([id])); setEditingLabel(id); };
   const addHire = () => { const id = addCard({ ref: null, name: "" }, null, { cat: "hire", title: "" }); setTimeout(() => { const el = document.querySelector(`[data-id="${id}"]`); if (el) { const r = el.getBoundingClientRect(); setMenu({ id, rect: { left: r.left, top: r.top, bottom: r.bottom } }); } }, 30); };
   const removeSel = () => { const ids = selRef.current; if (!ids.size) { if (selLink) { apply((d) => { d.links = d.links.filter((l) => l.id !== selLink); return d; }); setSelLink(null); } return; } apply((d) => { const touched = d.items.some((i) => ids.has(i.id) && (i.role || i.type === "card")); d.items.filter((i) => ids.has(i.id) && i.role).forEach((f) => { if (f.role === "group") d.items.filter((i) => i.role === "col" && i.group === f.id).forEach((c) => ids.add(c.id)); }); d.items.filter((i) => i.role === "cell" && (ids.has(i.col) || ids.has(i.row))).forEach((c) => ids.add(c.id)); d.items = d.items.filter((i) => !ids.has(i.id)); d.items.forEach((i) => { if (i.headId && ids.has(i.headId)) delete i.headId; }); d.links = d.links.filter((l) => !ids.has(l.from) && !ids.has(l.to)); if (touched && d.items.some((i) => i.role)) d.items = layoutMatrix(d.items); return d; }); setSel(new Set()); setMenu(null); };
-  const duplicateSel = () => { const ids = withContents([...selRef.current]); const map = new Map(); apply((d) => { const copies = d.items.filter((i) => ids.includes(i.id)).map((i) => { const c = { ...i, id: rid(), x: i.x + 40, y: i.y + 40 }; map.set(i.id, c.id); return c; }); d.items.push(...copies); return d; }); setSel(new Set(map.values())); };
-  const update = (id, patch) => apply((d) => { const it = d.items.find((i) => i.id === id); if (it) Object.assign(it, patch); return d; });
+  const duplicateSel = () => { const ids = withContents([...selRef.current]); const map = new Map(); apply((d) => { const copies = d.items.filter((i) => ids.includes(i.id)).map((i) => { const c = { ...i, id: rid(), x: i.x + 40, y: i.y + 40 }; map.set(i.id, c.id); return c; }); d.items.push(...copies); d.items = reflow(d.items); return d; }); setSel(new Set(map.values())); };
+  const update = (id, patch) => apply((d) => { const it = d.items.find((i) => i.id === id); if (it) Object.assign(it, patch); if ("lead" in patch) d.items = reflow(d.items); return d; });
   const addLink = (from, to, style = "dotted") => { if (from === to) return; apply((d) => { if (d.links.some((l) => (l.from === from && l.to === to) || (l.from === to && l.to === from))) return d; d.links.push({ id: rid(), from, to, style }); return d; }); };
   const tidy = (frameId) => apply((d) => { // lay the frame's cards out in a neat grid, grow the frame to fit
     const f = d.items.find((i) => i.id === frameId); if (!f) return d;
@@ -297,6 +297,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     cards.forEach((c, i) => { c.x = f.x + 16 + (i % cols) * (CARD_W + 12); c.y = f.y + 44 + Math.floor(i / cols) * (CARD_H + 10); });
     const rows = Math.ceil(cards.length / cols); f.h = Math.max(f.h, 44 + rows * (CARD_H + 10) + 8); return d; });
   const hasMatrix = items.some((i) => i.role);
+  const reflow = (its) => (its.some((i) => i.role) ? layoutMatrix(ensureCells(its)) : its);
   const relayout = () => apply((d) => { d.items = layoutMatrix(ensureCells(d.items)); return d; });
   const startMatrix = () => apply((d) => {
     const g = { id: rid(), type: "frame", role: "group", label: "Connect", color: GROUP_COLORS[0], x: 0, y: 0, w: COL_W, h: GROUP_H };
@@ -363,7 +364,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
         return; }
       const before = { ...docRef.current, items: docRef.current.items.map((i) => (d.orig.has(i.id) ? { ...i, ...d.orig.get(i.id) } : i)) };
       setHistory((h) => [...h.slice(-59), before]);
-      setDoc({ ...docRef.current, items: docRef.current.items.map((i) => (d.orig.has(i.id) ? { ...i, x: snap(i.x), y: snap(i.y) } : i)) });
+      setDoc({ ...docRef.current, items: reflow(docRef.current.items.map((i) => (d.orig.has(i.id) ? { ...i, x: snap(i.x), y: snap(i.y) } : i))) });
     }
     if (d.kind === "resize") { const before = { ...docRef.current, items: docRef.current.items.map((i) => (i.id === d.id ? { ...i, w: d.w, h: d.h } : i)) }; setHistory((h) => [...h.slice(-59), before]); setDoc({ ...docRef.current, items: docRef.current.items.map((i) => (i.id === d.id ? { ...i, w: snap(i.w), h: snap(i.h) } : i)) }); }
   };
@@ -513,7 +514,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
           <div className="cm-actions">
             <button className={`tb ${c.lead ? "tb-primary" : ""}`} onClick={() => update(c.id, { lead: !c.lead })} title="The lead sits first in its box, with a strong border"><Crown size={13} /> {c.lead ? "Lead" : "Make lead"}</button>
             <button className="tb" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "linkTo", from: c.id, rect: { left: r.left, top: r.top, bottom: r.bottom } }); }}><Link2 size={13} /> Dotted line to…</button>
-            <button className="tb tb-danger" onClick={() => { apply((d) => { d.items = d.items.filter((i) => i.id !== c.id); d.links = d.links.filter((l) => l.from !== c.id && l.to !== c.id); return d; }); setMenu(null); setSel(new Set()); }}><Trash2 size={13} /> Remove</button>
+            <button className="tb tb-danger" onClick={() => { apply((d) => { d.items = d.items.filter((i) => i.id !== c.id); d.items.forEach((i) => { if (i.headId === c.id) delete i.headId; }); d.links = d.links.filter((l) => l.from !== c.id && l.to !== c.id); d.items = reflow(d.items); return d; }); setMenu(null); setSel(new Set()); }}><Trash2 size={13} /> Remove</button>
           </div>
         </div></>); })()}
     </div>
