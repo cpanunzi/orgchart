@@ -3,6 +3,7 @@ import { supabase, isConfigured } from "./lib/supabase.js";
 import OrgChart from "./components/OrgChart.jsx";
 import ChartList from "./components/ChartList.jsx";
 import MatrixBoard from "./components/MatrixBoard.jsx";
+import CanvasBoard from "./components/CanvasBoard.jsx";
 
 export default function App() {
   const [currentChartId, setCurrentChartId] = useState(null);
@@ -77,6 +78,12 @@ export default function App() {
 
   if (currentChartId) {
     const meta = charts.find((c) => c.id === currentChartId);
+    // a chart we don't know yet (just created, or opened from a stale list): never guess its
+    // editor — the tree editor must not open a matrix/canvas doc — refresh the list first
+    if (!meta) return <UnknownChart chartId={currentChartId} reload={loadCharts} onBack={() => goTo(null)} />;
+    if (meta?.kind === "canvas") {
+      return <CanvasBoard key={currentChartId} chartId={currentChartId} chartName={meta?.name} onBack={() => goTo(null)} onRenamed={loadCharts} />;
+    }
     if (meta?.kind === "matrix") {
       return <MatrixBoard key={currentChartId} chartId={currentChartId} chartName={meta?.name} onBack={() => goTo(null)} onRenamed={loadCharts} />;
     }
@@ -98,5 +105,15 @@ export default function App() {
       onCreated={loadCharts}
       onDeleted={loadCharts}
     />
+  );
+}
+
+function UnknownChart({ chartId, reload, onBack }) {
+  const [tried, setTried] = useState(false);
+  useEffect(() => { let on = true; setTried(false); reload().then(() => { if (on) setTried(true); }); return () => { on = false; }; }, [chartId, reload]);
+  return (
+    <div style={{ padding: 60, fontFamily: "Iowan Old Style, Georgia, serif", color: "#8a7d6c" }}>
+      {tried ? <>This chart doesn't exist (or was deleted). <button onClick={onBack} style={{ font: "inherit", textDecoration: "underline", background: "none", border: "none", cursor: "pointer", color: "#1a1612" }}>Back to all charts</button></> : "Loading…"}
+    </div>
   );
 }

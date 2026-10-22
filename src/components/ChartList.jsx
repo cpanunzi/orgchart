@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Plus, Trash2, ArrowRight, Copy, Archive, ArchiveRestore } from "lucide-react";
+import { canvasFromMatrix } from "./CanvasBoard.jsx";
 import { supabase } from "../lib/supabase.js";
 import { sharedStyles } from "./styles.js";
 
@@ -18,14 +19,21 @@ const isArchived = (c) => c.archived === true || c.archived === "true";
 
 // A team matrix is a chart whose JSON carries kind:"matrix" + the functional chart it pulls
 // its people from. It opens in MatrixBoard (subteams × functions), not the tree editor.
-const isMatrix = (c) => c.kind === "matrix";
+const isMatrix = (c) => c.kind === "matrix" || c.kind === "canvas";
+const isCanvas = (c) => c.kind === "canvas";
 const rid = () => Math.random().toString(36).slice(2, 10);
 const matrixSeed = (name, sourceChartId) => ({
   id: "root", kind: "matrix", v: 5, sourceChartId, leadRef: null,
   top: [], left: [], cells: {}, children: [],
 });
 
+const canvasSeed = (sourceChartId) => ({ id: "root", kind: "canvas", v: 1, sourceChartId, headRef: null, items: [], links: [], children: [] });
+
 export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
+  const [creatingCanvas, setCreatingCanvas] = useState(false);
+  const [canvasName, setCanvasName] = useState("");
+  const [canvasSource, setCanvasSource] = useState("");
+  const [canvasFrom, setCanvasFrom] = useState("");   // an existing matrix to lay out as a starting point
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [showArchive, setShowArchive] = useState(false);
@@ -60,6 +68,18 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
     const nm = matrixName.trim() || "New team";
     const data = await create(nm, matrixSeed(nm, matrixSource));
     if (data) { setCreatingMatrix(false); setMatrixName(""); window.location.hash = data.id; }
+  };
+
+  const handleCreateCanvas = async () => {
+    if (!canvasSource) { alert("Pick the functional org to pull people from."); return; }
+    const nm = canvasName.trim() || "New canvas";
+    let tree = canvasSeed(canvasSource);
+    if (canvasFrom) {
+      const { data: m } = await supabase.from("charts").select("tree").eq("id", canvasFrom).single();
+      if (m?.tree?.kind === "matrix") { const { items, links } = canvasFromMatrix(m.tree); tree = { ...tree, sourceChartId: m.tree.sourceChartId || canvasSource, headRef: m.tree.leadRef || null, items, links }; }
+    }
+    const data = await create(nm, tree);
+    if (data) { setCreatingCanvas(false); setCanvasName(""); setCanvasFrom(""); window.location.hash = data.id; }
   };
 
   const handleDuplicate = async (chart) => {
@@ -128,7 +148,7 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
     >
       <button className="chart-main" onClick={() => onOpen(chart.id)}>
         <div className="chart-name">{chart.name}</div>
-        <div className="chart-meta">{isMatrix(chart) ? "team matrix · " : ""}edited {formatDate(chart.updated_at)}</div>
+        <div className="chart-meta">{isCanvas(chart) ? "matrix canvas · " : isMatrix(chart) ? "team matrix · " : ""}edited {formatDate(chart.updated_at)}</div>
       </button>
       <div className="chart-actions">
         {inArchive ? (
@@ -215,13 +235,46 @@ export default function ChartList({ charts, onOpen, onCreated, onDeleted }) {
           <div className="list-head list-head-2">
             <div>
               <h2>Team matrices</h2>
-              <div className="list-sub">A free-form grid: teams and subteams across the top and down the side, people where they meet.</div>
+              <div className="list-sub">A canvas of boxes and people you arrange freely — or a fixed grid of teams × subteams.</div>
             </div>
-            <button className="tb tb-primary" disabled={!sources.length}
-              onClick={() => { setCreatingMatrix(true); setMatrixSource(defaultSourceId); }}>
-              <Plus size={14} strokeWidth={1.8} /> New team matrix
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="tb tb-primary" disabled={!sources.length}
+                onClick={() => { setCreatingMatrix(false); setCreatingCanvas(true); setCanvasSource(defaultSourceId); }}>
+                <Plus size={14} strokeWidth={1.8} /> New canvas
+              </button>
+              <button className="tb" disabled={!sources.length}
+                onClick={() => { setCreatingCanvas(false); setCreatingMatrix(true); setMatrixSource(defaultSourceId); }}>
+                <Plus size={14} strokeWidth={1.8} /> New grid
+              </button>
+            </div>
           </div>
+
+          {creatingCanvas && (
+            <div className="new-row new-row-matrix">
+              <input autoFocus className="new-input" value={canvasName}
+                onChange={(e) => setCanvasName(e.target.value)}
+                placeholder="Canvas name — e.g. Connect matrix"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleCreateCanvas();
+                  if (e.key === "Escape") { setCreatingCanvas(false); setCanvasName(""); }
+                }} />
+              <label className="src-pick">
+                <span>People from</span>
+                <select className="src-select" value={canvasSource} onChange={(e) => setCanvasSource(e.target.value)}>
+                  {sources.map((c) => <option key={c.id} value={c.id}>{c.name}{isArchived(c) ? " (archived)" : ""}</option>)}
+                </select>
+              </label>
+              <label className="src-pick">
+                <span>Start from</span>
+                <select className="src-select" value={canvasFrom} onChange={(e) => setCanvasFrom(e.target.value)}>
+                  <option value="">a blank canvas</option>
+                  {charts.filter((c) => c.kind === "matrix").map((c) => <option key={c.id} value={c.id}>grid: {c.name}{isArchived(c) ? " (archived)" : ""}</option>)}
+                </select>
+              </label>
+              <button className="tb tb-primary" onClick={handleCreateCanvas}>Create</button>
+              <button className="tb" onClick={() => { setCreatingCanvas(false); setCanvasName(""); }}>Cancel</button>
+            </div>
+          )}
 
           {creatingMatrix && (
             <div className="new-row new-row-matrix">

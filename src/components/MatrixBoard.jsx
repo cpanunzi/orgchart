@@ -21,7 +21,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 const ck = (leftId, topId) => `${leftId}|${topId}`;
 const TOP_COLORS = ["#3b6ea5", "#6d5aa8", "#2f7f86", "#5b7a3f", "#7a6a3b"];
 const LEFT_COLORS = ["#b8442a", "#b07d2a", "#a0527a", "#4f6d7a", "#6b6252"];
-const initials = (name) => (name || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0] || "").join("").toUpperCase() || "?";
+export const initials = (name) => (name || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0] || "").join("").toUpperCase() || "?";
 const lanesOf = (teams) => (teams || []).flatMap((t) => (t.subs && t.subs.length ? t.subs.map((sub) => ({ id: sub.id, team: t, sub })) : [{ id: t.id, team: t, sub: null }]));
 
 // ---- upgrades from earlier board formats (each step only ever reads shapes it recognises) -----
@@ -67,7 +67,7 @@ const toV5 = (raw) => {
 };
 
 // Index the functional org: everyone by id, their manager, their reports, and their whole org.
-const buildSource = (tree) => {
+export const buildSource = (tree) => {
   const list = [], byId = new Map(), kids = new Map();
   const rec = (n, parent) => {
     const title = (n.title || "").trim();
@@ -448,14 +448,14 @@ function InlineEdit({ value, onCommit, onDone, className, placeholder, autoEdit 
 // ---- floating panels: clamp to the viewport next to whatever was clicked ----------------------
 // Prefer opening BELOW the thing you clicked and shrinking to the room available; only flip above
 // when there's genuinely no room underneath (so the panel doesn't cover the row you're working on).
-const place = (rect, w, h) => {
+export const place = (rect, w, h) => {
   const left = Math.max(12, Math.min(rect.left, window.innerWidth - w - 12));
   const below = window.innerHeight - rect.bottom - 18, above = rect.top - 18;
   if (below >= 260 || below >= above) return { left, top: rect.bottom + 6, maxHeight: Math.max(200, Math.min(h, below)) };
   const mh = Math.min(h, above); return { left, top: Math.max(12, rect.top - 6 - mh), maxHeight: mh };
 };
 
-function PeoplePicker({ ctx, rect, source, onPick, onClose }) {
+export function PeoplePicker({ ctx, rect, source, onPick, onClose }) {
   const [q, setQ] = useState("");
   const [added, setAdded] = useState(() => new Set());
   const ql = q.trim().toLowerCase();
@@ -545,7 +545,7 @@ function ChipMenu({ chip, p, rect, sourceName, onRole, onName, onLead, onRemove,
   </>);
 }
 
-const mxStyles = `
+export const mxStyles = `
 .mx-root { --line: #ded5c2; }
 .mx-top { display: flex; align-items: center; gap: 18px; padding: 4px 0 16px; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
 .mx-back { width: 38px; height: 38px; border: 1px solid var(--rule); background: transparent; border-radius: 8px; cursor: pointer; display: grid; place-items: center; color: var(--ink-soft); }
