@@ -558,7 +558,8 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
         const PAD = PIN_PAD; const pinned = freeze && hasMatrix;
         const pinY = pinned ? Math.max(view.y, PAD) : view.y, pinX = pinned ? Math.max(view.x, PAD) : view.x;
         const hasGroups = items.some((i) => i.role === "group"), hasRG = items.some((i) => i.role === "rgroup");
-        const headerBottom = (hasGroups ? GROUP_H + 10 : 0) + COLHEAD_H, leftRight = (hasRG ? RG_W + MGAP : 0) + ROWHEAD_W;
+        const tops = frames.filter((f) => f.role === "group" || f.role === "col"), lefts = frames.filter((f) => f.role === "row" || f.role === "rgroup");
+        const headerBottom = tops.length ? Math.max(...tops.map((f) => f.y + f.h)) : 0, leftRight = lefts.length ? Math.max(...lefts.map((f) => f.x + f.w)) : 0; void hasGroups; void hasRG;
         const layerOf = (it) => (!pinned || dragIds.has(it.id)) ? "main" : pinLayerOf(it, items);
         const frameEl = (f) => (
             <div key={f.id} data-id={f.id} className={`cv-frame ${f.role ? `cv-${f.role}` : ""} ${sel.has(f.id) ? "cv-sel" : ""}`} style={{ left: f.x, top: f.y, width: f.w, height: f.h, background: f.role === "group" ? f.color : f.role === "col" ? "#fffdf8" : f.role ? undefined : (f.tint || TINTS[0]), "--g": f.role === "col" ? (byId.get(f.group)?.color || "#8a7d6c") : f.color }}
