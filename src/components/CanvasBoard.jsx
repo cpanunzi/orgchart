@@ -63,7 +63,7 @@ const layoutMatrix = (items) => {
     y += h + MGAP;
   });
   // row-group bands: span their rows, head cards stacked under the label
-  rgroups.forEach((g) => { const rs = rows.filter((r) => r.group === g.id); if (!rs.length) { g.w = RG_W; g.h = Math.max(g.h || 0, 120); g.x = 0; return; }
+  rgroups.forEach((g) => { const rs = rows.filter((r) => r.group === g.id); if (!rs.length) { g.w = RG_W; g.h = 120; g.x = 0; if (!(g.y >= 0 && g.y < y + 2000)) g.y = y; return; }
     const y0 = Math.min(...rs.map((r) => r.y)), y1 = Math.max(...rs.map((r) => r.y + r.h)); g.x = 0; g.y = y0; g.w = RG_W; g.h = y1 - y0;
     const heads = items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === g.id).sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0) || a.y - b.y);
     heads.forEach((k, i) => { k.in = g.id; k.x = g.x + (RG_W - CARD_W) / 2; k.y = g.y + ROWLABEL_H + i * (CARD_H + CGAP); }); });
@@ -375,7 +375,8 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const addCol = (groupId) => { const id = rid(); apply((d) => { const gid = groupId || (d.items.filter((i) => i.role === "group").slice(-1)[0] || {}).id || null; const g = d.items.find((i) => i.id === gid); d.items.push({ id, type: "frame", role: "col", group: gid, label: "", x: g ? g.x + g.w - COL_W / 2 : 1e9, y: 0, w: COL_W, h: COLHEAD_H }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
   const addRowGroup = () => { const id = rid(); const selRows = [...sel].map((x) => byId.get(x)).filter((i) => i?.role === "row"); apply((d) => {
     const n = d.items.filter((i) => i.role === "rgroup").length; const rs = selRows.length ? selRows.map((r) => d.items.find((i) => i.id === r.id)) : [];
-    const y0 = rs.length ? Math.min(...rs.map((r) => r.y)) : 1e9, y1 = rs.length ? Math.max(...rs.map((r) => r.y + r.h)) : 1e9 + 120;
+    const rows = d.items.filter((i) => i.role === "row"); const bottom = rows.length ? Math.max(...rows.map((r) => r.y + r.h)) + MGAP : 0; // an empty band goes just under the last row
+    const y0 = rs.length ? Math.min(...rs.map((r) => r.y)) : bottom, y1 = rs.length ? Math.max(...rs.map((r) => r.y + r.h)) : bottom + 120;
     d.items.push({ id, type: "frame", role: "rgroup", label: "", color: GROUP_COLORS[(n + 3) % GROUP_COLORS.length], x: 0, y: y0, w: RG_W, h: Math.max(120, y1 - y0) });
     rs.forEach((r) => { r.group = id; r._keep = true; }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
   const addRow = () => { const id = rid(); apply((d) => { d.items.push({ id, type: "frame", role: "row", label: "", x: 0, y: 1e9, w: ROWHEAD_W, h: rowHeadH(1) }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
