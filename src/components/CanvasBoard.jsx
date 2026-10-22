@@ -20,7 +20,8 @@ import { PeoplePicker, place, buildSource, initials, mxStyles } from "./MatrixBo
 //   group  : a band across the top that a set of verticals belong to (Stays, Interfaces…)   { color }
 //   col    : a vertical (Payments & finance…)                                                 { group }
 //   row    : a function down the side (Product, Engineering) — its head card sits inside it
-//   cell   : the intersection                                                                 { col, row }
+//   cell   : the intersection                                     { col, row, headId? }  headId = which card in
+//            the row box this cell reports to (default: the row box itself — i.e. its first head)
 // Cells hold cards; a card with lead:true is the lead of that cell. Dotted lines from each row
 // head and column head into every cell are drawn automatically; `layoutMatrix` snaps the whole
 // structure into place and runs after anything is added to a cell. Everything stays draggable.
@@ -38,14 +39,14 @@ const layoutMatrix = (items) => {
   if (!cols.length && !rows.length) return items;
   const cells = items.filter((i) => i.role === "cell");
   const cellsOf = (r, c) => cells.filter((x) => x.row === r.id && x.col === c.id);
-  const cardsIn = (cell) => { const fr = rectOf(cell); return items.filter((i) => i.type === "card" && inside(rectOf(i), fr)).sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0) || a.y - b.y || a.x - b.x); };
+  const cardsIn = (cell) => { return items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === cell.id).sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0) || a.y - b.y || a.x - b.x); };
   const colX = new Map(); cols.forEach((c, i) => colX.set(c.id, ROWHEAD_W + MGAP + i * (COL_W + MGAP)));
   const top = groups.length ? GROUP_H + 10 : 0;
   groups.forEach((g) => { const gc = cols.filter((c) => c.group === g.id); if (!gc.length) { g.w = COL_W; g.h = GROUP_H; return; } g.x = colX.get(gc[0].id); g.y = 0; g.w = colX.get(gc[gc.length - 1].id) + COL_W - g.x; g.h = GROUP_H; });
   cols.forEach((c) => { c.x = colX.get(c.id); c.y = top; c.w = COL_W; c.h = COLHEAD_H; });
   let y = top + COLHEAD_H + MGAP;
   rows.forEach((r) => {
-    const headCards = (() => { const fr = rectOf(r); return items.filter((i) => i.type === "card" && inside(rectOf(i), fr)); })();
+    const headCards = items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === r.id);
     const rowCells = cols.map((c) => { let cell = cellsOf(r, c)[0]; return { c, cell, cards: cell ? cardsIn(cell) : [] }; });
     const h = Math.max(rowHeadH(headCards.length), ...rowCells.map((x) => cellH(x.cards.length)));
     r.x = 0; r.y = y; r.w = ROWHEAD_W; r.h = h;
@@ -77,6 +78,11 @@ const EMPTY_SOURCE = { list: [], byId: new Map(), orgOf: () => new Set(), kidsOf
 const rectOf = (it) => (it.type === "frame" ? { x: it.x, y: it.y, w: it.w, h: it.h } : { x: it.x, y: it.y, w: CARD_W, h: CARD_H });
 const inside = (inner, outer) => { const c = { x: inner.x + inner.w / 2, y: inner.y + inner.h / 2 }; return c.x >= outer.x && c.x <= outer.x + outer.w && c.y >= outer.y && c.y <= outer.y + outer.h; };
 const area = (r) => r.w * r.h;
+const overlaps = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+// An item belongs to the SMALLEST frame around its centre (so a box laid over a matrix cell
+// doesn't claim the cell's people, and a box inside a box belongs to the inner one).
+const ownerOf = (it, all) => { if (it.role) return null; /* matrix pieces belong to the layout, never to a box laid over them */ const r = rectOf(it); let best = null, ba = Infinity; all.forEach((f) => { if (f.type !== "frame" || f.id === it.id) return; const fr = rectOf(f); if (!inside(r, fr)) return; if (it.type === "frame" && area(fr) <= area(r)) return; const a = (f.role ? 0 : 1e12) + area(fr); /* a matrix cell/row always beats a free box laid over it */ if (a < ba) { ba = a; best = f; } }); return best; };
+const contentsOfFrame = (frameId, all) => { const out = []; const direct = all.filter((i) => ownerOf(i, all)?.id === frameId); direct.forEach((i) => { out.push(i.id); if (i.type === "frame") out.push(...contentsOfFrame(i.id, all)); }); return out; };
 
 // Build a matrix from a team grid: the grid's top teams become groups, their subteams the
 // verticals; a "Product" row takes each vertical's head (lead PM); each team down the side of the
@@ -227,7 +233,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
   const frames = items.filter((i) => i.type === "frame");
   // what moves with a frame: everything whose centre sits inside it
-  const contentsOf = (frameId, all) => { const f = all.find((i) => i.id === frameId); if (!f) return []; const fr = rectOf(f); return all.filter((i) => i.id !== frameId && inside(rectOf(i), fr) && (i.type === "card" || area(rectOf(i)) < area(fr))).map((i) => i.id); };
+  const contentsOf = (frameId, all) => contentsOfFrame(frameId, all);
 
   // ---- view (pan / zoom) ---------------------------------------------------------------------
   const toWorld = (sx, sy) => { const r = cvRef.current.getBoundingClientRect(); const v = viewRef.current; return { x: (sx - r.left - v.x) / v.z, y: (sy - r.top - v.y) / v.z }; };
@@ -273,9 +279,14 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const centreOfView = () => { const r = cvRef.current.getBoundingClientRect(); return toWorld(r.left + r.width / 2 - CARD_W / 2, r.top + r.height / 2 - CARD_H / 2); };
   const freeSpot = (p) => { const taken = (x, y) => (docRef.current.items || []).some((i) => i.type === "card" && Math.abs(i.x - x) < 24 && Math.abs(i.y - y) < 24); let { x, y } = p; x = snap(x); y = snap(y); while (taken(x, y)) { x += 24; y += 24; } return { x, y }; };
   const addCard = (pick, at, extra = {}) => { const id = rid(); const p = freeSpot(at || centreOfView()); apply((d) => { d.items.push({ id, type: "card", x: p.x, y: p.y, ref: pick.ref || null, name: pick.ref ? "" : (pick.name || ""), title: "", cat: pick.ref ? "auto" : "hire", ...extra }); return d; }); setSel(new Set([id])); return id; };
-  const addFrame = () => { const id = rid(); const p = centreOfView(); apply((d) => { d.items.unshift({ id, type: "frame", x: snap(p.x - 60), y: snap(p.y - 60), w: 320, h: 240, label: "", tint: TINTS[d.items.filter((i) => i.type === "frame").length % TINTS.length] }); return d; }); setSel(new Set([id])); setEditingLabel(id); };
+  const addFrame = () => { const id = rid(); const p = centreOfView(); apply((d) => {
+    const box = { id, type: "frame", x: snap(p.x - 60), y: snap(p.y - 60), w: 320, h: 240, label: "", tint: TINTS[d.items.filter((i) => i.type === "frame").length % TINTS.length] };
+    const others = d.items.filter((i) => i.type === "frame").map(rectOf);
+    if (others.some((o) => overlaps(box, o))) { // don't land on the matrix — go below everything in view
+      const rs = d.items.map(rectOf); box.x = snap(Math.min(...rs.map((r) => r.x))); box.y = snap(Math.max(...rs.map((r) => r.y + r.h)) + 40); }
+    d.items.push(box); return d; }); setSel(new Set([id])); setEditingLabel(id); };
   const addHire = () => { const id = addCard({ ref: null, name: "" }, null, { cat: "hire", title: "" }); setTimeout(() => { const el = document.querySelector(`[data-id="${id}"]`); if (el) { const r = el.getBoundingClientRect(); setMenu({ id, rect: { left: r.left, top: r.top, bottom: r.bottom } }); } }, 30); };
-  const removeSel = () => { const ids = selRef.current; if (!ids.size) { if (selLink) { apply((d) => { d.links = d.links.filter((l) => l.id !== selLink); return d; }); setSelLink(null); } return; } apply((d) => { const touched = d.items.some((i) => ids.has(i.id) && (i.role || i.type === "card")); d.items.filter((i) => ids.has(i.id) && i.role).forEach((f) => { if (f.role === "group") d.items.filter((i) => i.role === "col" && i.group === f.id).forEach((c) => ids.add(c.id)); }); d.items.filter((i) => i.role === "cell" && (ids.has(i.col) || ids.has(i.row))).forEach((c) => ids.add(c.id)); d.items = d.items.filter((i) => !ids.has(i.id)); d.links = d.links.filter((l) => !ids.has(l.from) && !ids.has(l.to)); if (touched && d.items.some((i) => i.role)) d.items = layoutMatrix(d.items); return d; }); setSel(new Set()); setMenu(null); };
+  const removeSel = () => { const ids = selRef.current; if (!ids.size) { if (selLink) { apply((d) => { d.links = d.links.filter((l) => l.id !== selLink); return d; }); setSelLink(null); } return; } apply((d) => { const touched = d.items.some((i) => ids.has(i.id) && (i.role || i.type === "card")); d.items.filter((i) => ids.has(i.id) && i.role).forEach((f) => { if (f.role === "group") d.items.filter((i) => i.role === "col" && i.group === f.id).forEach((c) => ids.add(c.id)); }); d.items.filter((i) => i.role === "cell" && (ids.has(i.col) || ids.has(i.row))).forEach((c) => ids.add(c.id)); d.items = d.items.filter((i) => !ids.has(i.id)); d.items.forEach((i) => { if (i.headId && ids.has(i.headId)) delete i.headId; }); d.links = d.links.filter((l) => !ids.has(l.from) && !ids.has(l.to)); if (touched && d.items.some((i) => i.role)) d.items = layoutMatrix(d.items); return d; }); setSel(new Set()); setMenu(null); };
   const duplicateSel = () => { const ids = withContents([...selRef.current]); const map = new Map(); apply((d) => { const copies = d.items.filter((i) => ids.includes(i.id)).map((i) => { const c = { ...i, id: rid(), x: i.x + 40, y: i.y + 40 }; map.set(i.id, c.id); return c; }); d.items.push(...copies); return d; }); setSel(new Set(map.values())); };
   const update = (id, patch) => apply((d) => { const it = d.items.find((i) => i.id === id); if (it) Object.assign(it, patch); return d; });
   const addLink = (from, to, style = "dotted") => { if (from === to) return; apply((d) => { if (d.links.some((l) => (l.from === from && l.to === to) || (l.from === to && l.to === from))) return d; d.links.push({ id: rid(), from, to, style }); return d; }); };
@@ -300,7 +311,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     if (f.role === "group") d.items.filter((i) => i.role === "col" && i.group === f.id).forEach((c) => gone.add(c.id));
     d.items.filter((i) => i.role === "cell" && ([...gone].includes(i.col) || i.row === f.id)).forEach((c) => gone.add(c.id));
     d.items = d.items.filter((i) => !gone.has(i.id)); if (f.role) d.items = layoutMatrix(d.items); return d; });
-  const addToFrame = (frameId, pick, lead) => { const id = rid(); apply((d) => { const f = d.items.find((i) => i.id === frameId); if (!f) return d; const n = d.items.filter((i) => i.type === "card" && inside(rectOf(i), rectOf(f))).length; d.items.push({ id, type: "card", x: f.x + CPAD, y: f.y + CPAD + n * (CARD_H + CGAP), ref: pick.ref || null, name: pick.ref ? "" : (pick.name || ""), title: "", cat: pick.ref ? "auto" : "hire", lead: !!lead || (f.role === "cell" && n === 0) }); if (f.role) d.items = layoutMatrix(d.items); return d; }); return id; };
+  const addToFrame = (frameId, pick, lead) => { const id = rid(); apply((d) => { const f = d.items.find((i) => i.id === frameId); if (!f) return d; const n = d.items.filter((i) => i.type === "card" && ownerOf(i, d.items)?.id === f.id).length; d.items.push({ id, type: "card", x: f.x + CPAD, y: f.y + CPAD + n * (CARD_H + CGAP), ref: pick.ref || null, name: pick.ref ? "" : (pick.name || ""), title: "", cat: pick.ref ? "auto" : "hire", lead: !!lead || (f.role === "cell" && n === 0) }); if (f.role) d.items = layoutMatrix(d.items); return d; }); return id; };
   const setLegend = (cat, patch) => apply((d) => { d.legend = { ...DEFAULT_LEGEND, ...(d.legend || {}) }; d.legend[cat] = { ...d.legend[cat], ...patch }; return d; });
 
   const onPick = (pick) => {
@@ -399,6 +410,14 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
             <button className="tb" onClick={relayout} title="Snap the matrix back into a clean grid"><LayoutGrid size={14} strokeWidth={1.7} /> Re-layout</button>
           </>) : <button className="tb" onClick={startMatrix} title="Start a matrix: verticals across, functions down, people where they meet"><LayoutGrid size={14} strokeWidth={1.7} /> Start a matrix</button>}
           <button className={`tb ${linkFrom ? "tb-primary" : ""}`} disabled={!linkFrom && !(sel.size === 1 && byId.get([...sel][0])?.type === "card")} onClick={() => setLinkFrom(linkFrom ? null : [...sel][0])} title="Select a person, then click the person they have a dotted line to"><Link2 size={14} strokeWidth={1.7} /> {linkFrom ? "Click the other person…" : "Dotted line"}</button>
+          {selFrame?.role === "cell" && (() => { const r = byId.get(selFrame.row); const heads = r ? items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === r.id) : []; return (
+            <label className="cv-reports" title="Who this box reports to — any person sitting in its row box">
+              <span>reports to</span>
+              <select value={selFrame.headId || ""} onChange={(e) => update(selFrame.id, { headId: e.target.value || null })}>
+                <option value="">{r?.label || "row"} (default)</option>
+                {heads.map((h) => <option key={h.id} value={h.id}>{person(h.ref)?.name || h.name || "Open role"}</option>)}
+              </select>
+            </label>); })()}
           {selFrame && !selFrame.role && <button className="tb" onClick={() => tidy(selFrame.id)} title="Arrange the people in this box in a neat grid"><LayoutGrid size={14} strokeWidth={1.7} /> Tidy box</button>}
           {sel.size > 0 && <button className="tb tb-danger" onClick={removeSel} title="Remove selected (⌫)"><Trash2 size={14} strokeWidth={1.7} /></button>}
         </div>
@@ -425,7 +444,9 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
           <svg className="cv-links cv-autolinks" style={{ overflow: "visible" }}>
             {frames.filter((f) => f.role === "cell").map((cell) => { const r = byId.get(cell.row), c = byId.get(cell.col); const g = c && byId.get(c.group); const col = g?.color || "#8a7d6c"; return (
               <g key={cell.id}>
-                {r && <line x1={r.x + r.w} y1={cell.y + 30} x2={cell.x} y2={cell.y + 30} stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" />}
+                {r && (() => { const hc = cell.headId && byId.get(cell.headId); if (!hc) return <line x1={r.x + r.w} y1={cell.y + 30} x2={cell.x} y2={cell.y + 30} stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" />;
+                  const x1 = hc.x + CARD_W, y1 = hc.y + CARD_H / 2, x2 = cell.x, y2 = cell.y + 30, xm = r.x + r.w + 10;
+                  return <polyline points={`${x1},${y1} ${xm},${y1} ${xm},${y2} ${x2},${y2}`} fill="none" stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" />; })()}
                 {c && <line x1={cell.x + cell.w / 2} y1={c.y + c.h} x2={cell.x + cell.w / 2} y2={cell.y} stroke={col} strokeWidth="1.5" strokeDasharray="3 4" />}
               </g>); })}
           </svg>
@@ -473,7 +494,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
       </div>
 
       {picker && <PeoplePicker ctx={picker.mode === "head" ? { title: "Who heads this org?", hint: "Levels are counted from this person.", clearable: !!doc.headRef }
-        : picker.mode === "cell" ? (() => { const f = byId.get(picker.frameId); const r = f?.role === "cell" ? byId.get(f.row) : f; const c = f?.role === "cell" ? byId.get(f.col) : null; const heads = (r ? items.filter((i) => i.type === "card" && i.ref && inside(rectOf(i), rectOf(r))).map((i) => i.ref) : []); return { title: `${r?.label || "Function"}${c ? ` × ${c.label || "vertical"}` : ""}`, anchors: [...new Set([...heads, doc.headRef].filter(Boolean))].map((id) => ({ id, label: `${person(id)?.name || "?"}'s org` })), byTeam: true, multi: true, allowNew: true, taken: new Set(f ? items.filter((i) => i.ref && inside(rectOf(i), rectOf(f))).map((i) => i.ref) : []) }; })()
+        : picker.mode === "cell" ? (() => { const f = byId.get(picker.frameId); const r = f?.role === "cell" ? byId.get(f.row) : f; const c = f?.role === "cell" ? byId.get(f.col) : null; const heads = (r ? items.filter((i) => i.type === "card" && i.ref && ownerOf(i, items)?.id === r.id).map((i) => i.ref) : []); return { title: `${r?.label || "Function"}${c ? ` × ${c.label || "vertical"}` : ""}`, anchors: [...new Set([...heads, doc.headRef].filter(Boolean))].map((id) => ({ id, label: `${person(id)?.name || "?"}'s org` })), byTeam: true, multi: true, allowNew: true, taken: new Set(f ? items.filter((i) => i.ref && ownerOf(i, items)?.id === f.id).map((i) => i.ref) : []) }; })()
         : picker.mode === "linkTo" ? { title: `Dotted line from ${person(byId.get(picker.from)?.ref)?.name || byId.get(picker.from)?.name || "this person"} to…`, anchors: doc.headRef ? [{ id: doc.headRef, label: `${headP?.name}'s org` }] : [], byTeam: true, allowNew: true }
         : { title: "Add people to the canvas", anchors: doc.headRef ? [{ id: doc.headRef, label: `${headP?.name}'s org` }] : [], byTeam: true, multi: true, allowNew: true, taken: new Set(items.filter((i) => i.ref).map((i) => i.ref)) }}
         rect={picker.rect} source={source} onPick={onPick} onClose={() => setPicker(null)} />}
@@ -545,6 +566,8 @@ const cvStyles = `
 .cv-autolinks { z-index: 0; }
 .cv-card.cv-lead { border-width: 2px; border-left-width: 6px; box-shadow: 0 2px 4px rgba(26,22,18,.12), 0 8px 18px -10px rgba(26,22,18,.35); }
 .cv-card.cv-lead strong { font-size: 14px; }
+.cv-reports { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px 0 10px; border: 1px solid var(--line); border-radius: 9px; background: #fffdf7; font-family: 'Iowan Old Style', Georgia, serif; font-size: 12px; font-style: italic; color: var(--ink-soft); }
+.cv-reports select { font: inherit; font-style: normal; border: none; background: transparent; color: var(--ink); outline: none; max-width: 180px; }
 .cv-marquee { position: absolute; border: 1px dashed var(--ink); background: rgba(26,22,18,.05); pointer-events: none; }
 .cv-empty { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); max-width: 520px; text-align: center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 15px; line-height: 1.6; color: var(--ink-faint); pointer-events: none; }
 .cv-legend { position: absolute; right: 18px; bottom: 18px; width: 290px; background: rgba(255,253,248,.96); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px 12px; font-family: 'Iowan Old Style', Georgia, serif; }
