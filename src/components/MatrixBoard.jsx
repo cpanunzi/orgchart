@@ -471,17 +471,18 @@ export function PeoplePicker({ ctx, rect, source, onPick, onClose }) {
     const fresh = (people) => people.filter((p) => usableP(p) && match(p) && !seen.has(p.id)).map((p) => { seen.add(p.id); return p; });
     anchors.forEach((an) => {
       const head = source.byId.get(an.id);
-      const direct = source.kidsOf(an.id).map((id) => source.byId.get(id)).filter(usableP);
+      const direct = source.kidsOf(an.id).map((id) => source.byId.get(id)).filter(Boolean);
       const solo = fresh([head, ...direct.filter((d) => !source.kidsOf(d.id).length)]);
       if (solo.length) out.push({ key: an.id + "_solo", label: an.label, people: solo });
-      direct.filter((d) => source.kidsOf(d.id).length).forEach((d) => {
+      direct.filter((d) => source.kidsOf(d.id).length).forEach((d) => { // a "???" placeholder manager still has a team worth listing
         const people = fresh([...source.orgOf(d.id)].map((id) => source.byId.get(id)));
-        if (people.length) out.push({ key: an.id + d.id, label: `${d.name}'s team`, people, team: true });
+        if (people.length) out.push({ key: an.id + d.id, label: usableP(d) ? `${d.name}'s team` : `${d.title || "open role"} — team`, people, team: true });
       });
     });
     return out;
   }, [anchors.map((x) => x.id).join(","), source, ql]); // eslint-disable-line
-  const rest = ql ? source.list.filter((p) => usableP(p) && match(p) && !org.has(p.id)).slice(0, 12) : [];
+  const shown = useMemo(() => new Set(sections.flatMap((x) => x.people.map((p) => p.id))), [sections]);
+  const rest = ql ? source.list.filter((p) => usableP(p) && match(p) && !shown.has(p.id)).slice(0, 12) : []; // anyone matching who isn't already listed above
   const pick = (p) => { onPick({ ref: p.id, name: p.name }); if (ctx.multi) setAdded((s) => new Set(s).add(p.id)); };
   const addAll = (people) => { const todo = people.filter((p) => !isDone(p)); todo.forEach((p) => onPick({ ref: p.id, name: p.name })); setAdded((s) => { const n = new Set(s); todo.forEach((p) => n.add(p.id)); return n; }); };
   const Row = ({ p }) => { const done = isDone(p); return (
