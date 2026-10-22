@@ -103,7 +103,10 @@ const ownerOf = (it, all) => {
   // to drop it dead centre; the layout then pulls it fully inside
   if (it.type === "card") {
     if (it.in) { const f = all.find((x) => x.id === it.in); if (f && f.role && overlapRatio(r, rectOf(f)) >= 0.3) return f; } // moved together with its box → still its box
-    let best = null, br = 0.3; all.forEach((f) => { if (f.type !== "frame" || !f.role) return; const o = overlapRatio(r, rectOf(f)); if (o > br) { br = o; best = f; } }); if (best) return best; }
+    // dropped just outside a full cell (below its last card, say) still counts — nearest cell/row
+    // box in the same column within about a card's height
+    let near = null, nd = 64; all.forEach((f) => { if (f.type !== "frame" || !f.role || f.role === "group" || f.role === "col") return; const fr = rectOf(f); const ox = Math.min(r.x + r.w, fr.x + fr.w) - Math.max(r.x, fr.x); if (ox < CARD_W * 0.5) return; const dy = Math.max(0, fr.y - (r.y + r.h), r.y - (fr.y + fr.h)); if (dy < nd) { nd = dy; near = f; } });
+    let best = null, br = 0.3; all.forEach((f) => { if (f.type !== "frame" || !f.role) return; const o = overlapRatio(r, rectOf(f)); if (o > br) { br = o; best = f; } }); if (best) return best; if (near) return near; }
   let best = null, ba = Infinity;
   all.forEach((f) => { if (f.type !== "frame" || f.id === it.id || f.role) return; const fr = rectOf(f); if (!inside(r, fr)) return; if (it.type === "frame" && area(fr) <= area(r)) return; const a = area(fr); if (a < ba) { ba = a; best = f; } });
   return best;
