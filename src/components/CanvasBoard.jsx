@@ -19,7 +19,8 @@ import { PeoplePicker, place, buildSource, initials, mxStyles } from "./MatrixBo
 // Matrix scaffold (optional, on the same canvas): frames carry a `role` —
 //   group  : a band across the top that a set of verticals belong to (Stays, Interfaces…)   { color }
 //   col    : a vertical (Payments & finance…)                                                 { group }
-//   row    : a function down the side (Product, Engineering) — its head card sits inside it
+//   row    : a function down the side (Product, Engineering) — its head card sits inside it   { group? }
+//   rgroup : a band down the left that a set of rows belong to (CCO, Finance…), head card inside { color }
 //   cell   : the intersection                        { col, row, headId?, span? }  span = how many verticals
 //            (this one and the next span-1 in order) the cell covers — a merged cell  headId = which card in
 //            the row box this cell reports to (default: the row box itself — i.e. its first head)
@@ -29,20 +30,22 @@ import { PeoplePicker, place, buildSource, initials, mxStyles } from "./MatrixBo
 const rid = () => Math.random().toString(36).slice(2, 10);
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const GROUP_COLORS = ["#3b6ea5", "#6d5aa8", "#5b7a3f", "#b07d2a", "#b8442a", "#2f7f86"];
-const ROWHEAD_W = 224, COL_W = 232, MGAP = 22, GROUP_H = 46, COLHEAD_H = 58, CPAD = 12, CGAP = 8, ROWLABEL_H = 34;
+const RG_W = 196, ROWHEAD_W = 224, COL_W = 232, MGAP = 22, GROUP_H = 46, COLHEAD_H = 58, CPAD = 12, CGAP = 8, ROWLABEL_H = 34;
 const cellH = (n) => Math.max(76, CPAD * 2 + n * CARD_H + Math.max(0, n - 1) * CGAP);
 const rowHeadH = (n) => ROWLABEL_H + Math.max(1, n) * CARD_H + Math.max(0, n - 1) * CGAP + CPAD; // label on top, head card(s) under it
 // Snap the matrix scaffold into a clean grid: verticals across (grouped), functions down, cells at
 // the intersections sized to what they hold. Cards inside a cell stack top-down, lead first.
 const layoutMatrix = (items) => {
-  const groups = items.filter((i) => i.role === "group"), rows = items.filter((i) => i.role === "row");
+  const groups = items.filter((i) => i.role === "group"), rgroups = items.filter((i) => i.role === "rgroup");
+  const rows = items.filter((i) => i.role === "row");
   const cols = items.filter((i) => i.role === "col").sort((a, b) => groups.findIndex((g) => g.id === a.group) - groups.findIndex((g) => g.id === b.group));
   if (!cols.length && !rows.length) return items;
+  const LEFT = rgroups.length ? RG_W + MGAP : 0;
   const cells = items.filter((i) => i.role === "cell");
   const cellsOf = (r, c) => cells.filter((x) => x.row === r.id && x.col === c.id);
   items.forEach((k) => { if (k.type === "card" && k.in && ownerOf(k, items)?.id !== k.in) delete k.in; });
   const cardsIn = (cell) => { return items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === cell.id).sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0) || a.y - b.y || a.x - b.x); };
-  const colX = new Map(); cols.forEach((c, i) => colX.set(c.id, ROWHEAD_W + MGAP + i * (COL_W + MGAP)));
+  const colX = new Map(); cols.forEach((c, i) => colX.set(c.id, LEFT + ROWHEAD_W + MGAP + i * (COL_W + MGAP)));
   const top = groups.length ? GROUP_H + 10 : 0;
   groups.forEach((g) => { const gc = cols.filter((c) => c.group === g.id); if (!gc.length) { g.w = COL_W; g.h = GROUP_H; return; } g.x = colX.get(gc[0].id); g.y = 0; g.w = colX.get(gc[gc.length - 1].id) + COL_W - g.x; g.h = GROUP_H; });
   cols.forEach((c) => { c.x = colX.get(c.id); c.y = top; c.w = COL_W; c.h = COLHEAD_H; });
@@ -51,7 +54,7 @@ const layoutMatrix = (items) => {
     const headCards = items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === r.id);
     const rowCells = []; for (let ci = 0; ci < cols.length;) { const c = cols[ci]; const cell = cellsOf(r, c)[0]; const span = Math.max(1, Math.min(cell?.span || 1, cols.length - ci)); rowCells.push({ c, cell, span, cards: cell ? cardsIn(cell) : [] }); ci += span; }
     const h = Math.max(rowHeadH(headCards.length), ...rowCells.map((x) => cellH(Math.ceil(x.cards.length / Math.max(1, Math.min(x.span, x.cards.length))))));
-    r.x = 0; r.y = y; r.w = ROWHEAD_W; r.h = h;
+    r.x = LEFT; r.y = y; r.w = ROWHEAD_W; r.h = h;
     headCards.forEach((k, i) => { k.in = r.id; k.x = r.x + (ROWHEAD_W - CARD_W) / 2; k.y = r.y + ROWLABEL_H + i * (CARD_H + CGAP); });
     rowCells.forEach(({ c, cell, span, cards }) => { if (!cell) return; cell.x = colX.get(c.id); cell.y = y; cell.w = span * COL_W + (span - 1) * MGAP; cell.h = h; if (span > 1) cell.span = span; else delete cell.span;
       // in a merged cell the cards sit together as a compact centred block, not spread across the width
@@ -59,20 +62,32 @@ const layoutMatrix = (items) => {
       cards.forEach((k, i) => { k.in = cell.id; k.x = x0 + (i % ncols) * (CARD_W + 16); k.y = cell.y + CPAD + Math.floor(i / ncols) * (CARD_H + CGAP); }); });
     y += h + MGAP;
   });
+  // row-group bands: span their rows, head cards stacked under the label
+  rgroups.forEach((g) => { const rs = rows.filter((r) => r.group === g.id); if (!rs.length) { g.w = RG_W; g.h = Math.max(g.h || 0, 120); g.x = 0; return; }
+    const y0 = Math.min(...rs.map((r) => r.y)), y1 = Math.max(...rs.map((r) => r.y + r.h)); g.x = 0; g.y = y0; g.w = RG_W; g.h = y1 - y0;
+    const heads = items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === g.id).sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0) || a.y - b.y);
+    heads.forEach((k, i) => { k.in = g.id; k.x = g.x + (RG_W - CARD_W) / 2; k.y = g.y + ROWLABEL_H + i * (CARD_H + CGAP); }); });
   return items;
 };
 // Read the scaffold's order off its positions: rows top-to-bottom, groups left-to-right, verticals
 // left-to-right inside whichever group band they sit under. Dragging a row/vertical/group and
 // dropping it somewhere new is then just "re-read the order and lay out again".
-const orderScaffold = (items) => {
+// `moved` = ids the user just dragged: only those re-pick their group by position, so dragging a
+// band over a row/vertical never swallows it
+const orderScaffold = (items, moved = new Set()) => {
   const groups = items.filter((i) => i.role === "group").sort((a, b) => a.x - b.x);
   const cols = items.filter((i) => i.role === "col");
-  cols.forEach((c) => { const cx = c.x + c.w / 2; const g = groups.find((gr) => cx >= gr.x - MGAP / 2 && cx <= gr.x + gr.w + MGAP / 2); if (g) c.group = g.id; else if (!groups.some((gr) => gr.id === c.group)) c.group = groups.length ? (c.x < (groups[0].x) ? groups[0] : groups[groups.length - 1]).id : null; });
+  cols.forEach((c) => { if (!moved.has(c.id) && groups.some((g) => g.id === c.group)) return; const ov = (gr) => Math.min(c.x + c.w, gr.x + gr.w) - Math.max(c.x, gr.x); const g = groups.map((gr) => [ov(gr) / Math.min(c.w, gr.w), gr]).filter(([o]) => o >= 0.4).sort((a, b) => b[0] - a[0])[0]; if (g) c.group = g[1].id; else if (!groups.some((gr) => gr.id === c.group)) c.group = groups.length ? (c.x < (groups[0].x) ? groups[0] : groups[groups.length - 1]).id : null; });
   cols.sort((a, b) => groups.findIndex((g) => g.id === a.group) - groups.findIndex((g) => g.id === b.group) || a.x - b.x);
-  const rows = items.filter((i) => i.role === "row").sort((a, b) => a.y - b.y);
+  const rgroups = items.filter((i) => i.role === "rgroup").sort((a, b) => a.y - b.y);
+  const rows = items.filter((i) => i.role === "row");
+  rows.forEach((r) => { const known = rgroups.some((gr) => gr.id === r.group); if (r._keep) { delete r._keep; return; } if (!moved.has(r.id)) { if (!known) r.group = null; return; } const ov = (gr) => Math.min(r.y + r.h, gr.y + gr.h) - Math.max(r.y, gr.y); const g = rgroups.map((gr) => [ov(gr) / Math.min(r.h, gr.h), gr]).filter(([o]) => o >= 0.4).sort((a, b) => b[0] - a[0])[0]; r.group = g ? g[1].id : null; }); // enough vertical overlap with a band = in it
+  // a group's rows travel as a block positioned where the band sits; ungrouped rows keep their own y
+  const key = (r) => { const g = rgroups.find((gr) => gr.id === r.group); return g ? g.y : r.y; };
+  rows.sort((a, b) => key(a) - key(b) || a.y - b.y);
   const cells = items.filter((i) => i.role === "cell");
   const rest = items.filter((i) => !i.role);
-  return [...groups, ...cols, ...rows, ...cells, ...rest];
+  return [...groups, ...rgroups, ...cols, ...rows, ...cells, ...rest];
 };
 const ensureCells = (items) => {
   const rows = items.filter((i) => i.role === "row"), groups = items.filter((i) => i.role === "group");
@@ -323,10 +338,11 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     ids.forEach((id) => { const it = all.find((i) => i.id === id); if (!it) return;
       if (it.type === "frame") addFrame(id);
       if (it.role === "row") all.filter((i) => i.role === "cell" && i.row === id).forEach((c) => addFrame(c.id));
+      if (it.role === "rgroup") all.filter((i) => i.role === "row" && i.group === id).forEach((r) => { addFrame(r.id); all.filter((x) => x.role === "cell" && x.row === r.id).forEach((x) => addFrame(x.id)); });
       if (it.role === "col") all.filter((i) => i.role === "cell" && i.col === id).forEach((c) => addFrame(c.id));
       if (it.role === "group") all.filter((i) => i.role === "col" && i.group === id).forEach((c) => { addFrame(c.id); all.filter((x) => x.role === "cell" && x.col === c.id).forEach((x) => addFrame(x.id)); }); });
     return [...out]; };
-  const moveIds = (ids, dx, dy, commit) => { const full = withContents(ids); apply((d) => { d.items.forEach((i) => { if (full.includes(i.id)) { i.x = commit ? snap(i.x + dx) : i.x + dx; i.y = commit ? snap(i.y + dy) : i.y + dy; } }); if (commit) d.items = reflow(d.items); return d; }); };
+  const moveIds = (ids, dx, dy, commit) => { const full = withContents(ids); apply((d) => { d.items.forEach((i) => { if (full.includes(i.id)) { i.x = commit ? snap(i.x + dx) : i.x + dx; i.y = commit ? snap(i.y + dy) : i.y + dy; } }); if (commit) d.items = reflow(d.items, new Set(full)); return d; }); };
   const centreOfView = () => { const r = cvRef.current.getBoundingClientRect(); return toWorld(r.left + r.width / 2 - CARD_W / 2, r.top + r.height / 2 - CARD_H / 2); };
   const freeSpot = (p) => { const taken = (x, y) => (docRef.current.items || []).some((i) => i.type === "card" && Math.abs(i.x - x) < 24 && Math.abs(i.y - y) < 24); let { x, y } = p; x = snap(x); y = snap(y); while (taken(x, y)) { x += 24; y += 24; } return { x, y }; };
   const addCard = (pick, at, extra = {}) => { const id = rid(); const p = freeSpot(at || centreOfView()); apply((d) => { d.items.push({ id, type: "card", x: p.x, y: p.y, ref: pick.ref || null, name: pick.ref ? "" : (pick.name || ""), title: "", cat: pick.ref ? "auto" : "hire", ...extra }); d.items = reflow(d.items); return d; }); setSel(new Set([id])); return id; };
@@ -337,7 +353,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
       const rs = d.items.map(rectOf); box.x = snap(Math.min(...rs.map((r) => r.x))); box.y = snap(Math.max(...rs.map((r) => r.y + r.h)) + 40); }
     d.items.push(box); return d; }); setSel(new Set([id])); setEditingLabel(id); };
   const addHire = () => { const id = addCard({ ref: null, name: "" }, null, { cat: "hire", title: "" }); setTimeout(() => { const el = document.querySelector(`[data-id="${id}"]`); if (el) { const r = el.getBoundingClientRect(); setMenu({ id, rect: { left: r.left, top: r.top, bottom: r.bottom } }); } }, 30); };
-  const removeSel = () => { const ids = selRef.current; if (!ids.size) { if (selLink) { apply((d) => { d.links = d.links.filter((l) => l.id !== selLink); return d; }); setSelLink(null); } return; } apply((d) => { const touched = d.items.some((i) => ids.has(i.id) && (i.role || i.type === "card")); d.items.filter((i) => ids.has(i.id) && i.role).forEach((f) => { if (f.role === "group") d.items.filter((i) => i.role === "col" && i.group === f.id).forEach((c) => ids.add(c.id)); }); d.items.filter((i) => i.role === "cell" && (ids.has(i.col) || ids.has(i.row))).forEach((c) => ids.add(c.id)); d.items = d.items.filter((i) => !ids.has(i.id)); d.items.forEach((i) => { if (i.headId && ids.has(i.headId)) delete i.headId; }); d.links = d.links.filter((l) => !ids.has(l.from) && !ids.has(l.to)); if (touched && d.items.some((i) => i.role)) d.items = layoutMatrix(d.items); return d; }); setSel(new Set()); setMenu(null); };
+  const removeSel = () => { const ids = selRef.current; if (!ids.size) { if (selLink) { apply((d) => { d.links = d.links.filter((l) => l.id !== selLink); return d; }); setSelLink(null); } return; } apply((d) => { const touched = d.items.some((i) => ids.has(i.id) && (i.role || i.type === "card")); d.items.filter((i) => ids.has(i.id) && i.role).forEach((f) => { if (f.role === "group") d.items.filter((i) => i.role === "col" && i.group === f.id).forEach((c) => ids.add(c.id)); if (f.role === "rgroup") d.items.forEach((i) => { if (i.role === "row" && i.group === f.id) i.group = null; }); }); d.items.filter((i) => i.role === "cell" && (ids.has(i.col) || ids.has(i.row))).forEach((c) => ids.add(c.id)); d.items = d.items.filter((i) => !ids.has(i.id)); d.items.forEach((i) => { if (i.headId && ids.has(i.headId)) delete i.headId; }); d.links = d.links.filter((l) => !ids.has(l.from) && !ids.has(l.to)); if (touched && d.items.some((i) => i.role)) d.items = layoutMatrix(d.items); return d; }); setSel(new Set()); setMenu(null); };
   const duplicateSel = () => { const ids = withContents([...selRef.current]); const map = new Map(); apply((d) => { const copies = d.items.filter((i) => ids.includes(i.id)).map((i) => { const { in: _in, ...rest } = i; const c = { ...rest, id: rid(), x: i.x + (i.type === "card" && i.in ? CARD_W + 40 : 40), y: i.y + (i.type === "card" && i.in ? 0 : 40), lead: false }; map.set(i.id, c.id); return c; }); d.items.push(...copies); d.items = reflow(d.items); return d; }); setSel(new Set(map.values())); };
   const update = (id, patch) => apply((d) => { const it = d.items.find((i) => i.id === id); if (it) Object.assign(it, patch); if ("lead" in patch) d.items = reflow(d.items); return d; });
   const addLink = (from, to, style = "dotted") => { if (from === to) return; apply((d) => { if (d.links.some((l) => (l.from === from && l.to === to) || (l.from === to && l.to === from))) return d; d.links.push({ id: rid(), from, to, style }); return d; }); };
@@ -348,7 +364,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     cards.forEach((c, i) => { c.x = f.x + 16 + (i % cols) * (CARD_W + 12); c.y = f.y + 44 + Math.floor(i / cols) * (CARD_H + 10); });
     const rows = Math.ceil(cards.length / cols); f.h = Math.max(f.h, 44 + rows * (CARD_H + 10) + 8); return d; });
   const hasMatrix = items.some((i) => i.role);
-  const reflow = (its) => (its.some((i) => i.role) ? layoutMatrix(ensureCells(orderScaffold(its))) : its);
+  const reflow = (its, moved) => (its.some((i) => i.role) ? layoutMatrix(ensureCells(orderScaffold(its, moved))) : its);
   const relayout = () => apply((d) => { d.items = reflow(d.items); return d; });
   const startMatrix = () => apply((d) => {
     const g = { id: rid(), type: "frame", role: "group", label: "Connect", color: GROUP_COLORS[0], x: 0, y: 0, w: COL_W, h: GROUP_H };
@@ -357,10 +373,16 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     d.items.push(g, c, r); d.items = layoutMatrix(ensureCells(d.items)); return d; });
   const addGroup = () => { const id = rid(); apply((d) => { const n = d.items.filter((i) => i.role === "group").length; d.items.push({ id, type: "frame", role: "group", label: "", color: GROUP_COLORS[n % GROUP_COLORS.length], x: 1e9, y: 0, w: COL_W, h: GROUP_H }); d.items.push({ id: rid(), type: "frame", role: "col", group: id, label: "", x: 1e9, y: 0, w: COL_W, h: COLHEAD_H }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
   const addCol = (groupId) => { const id = rid(); apply((d) => { const gid = groupId || (d.items.filter((i) => i.role === "group").slice(-1)[0] || {}).id || null; const g = d.items.find((i) => i.id === gid); d.items.push({ id, type: "frame", role: "col", group: gid, label: "", x: g ? g.x + g.w - COL_W / 2 : 1e9, y: 0, w: COL_W, h: COLHEAD_H }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
+  const addRowGroup = () => { const id = rid(); const selRows = [...sel].map((x) => byId.get(x)).filter((i) => i?.role === "row"); apply((d) => {
+    const n = d.items.filter((i) => i.role === "rgroup").length; const rs = selRows.length ? selRows.map((r) => d.items.find((i) => i.id === r.id)) : [];
+    const y0 = rs.length ? Math.min(...rs.map((r) => r.y)) : 1e9, y1 = rs.length ? Math.max(...rs.map((r) => r.y + r.h)) : 1e9 + 120;
+    d.items.push({ id, type: "frame", role: "rgroup", label: "", color: GROUP_COLORS[(n + 3) % GROUP_COLORS.length], x: 0, y: y0, w: RG_W, h: Math.max(120, y1 - y0) });
+    rs.forEach((r) => { r.group = id; r._keep = true; }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
   const addRow = () => { const id = rid(); apply((d) => { d.items.push({ id, type: "frame", role: "row", label: "", x: 0, y: 1e9, w: ROWHEAD_W, h: rowHeadH(1) }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
   const removeFrame = (f) => apply((d) => { // a scaffold piece takes its cells (not their people) with it
     const gone = new Set([f.id]);
     if (f.role === "group") d.items.filter((i) => i.role === "col" && i.group === f.id).forEach((c) => gone.add(c.id));
+    if (f.role === "rgroup") d.items.forEach((i) => { if (i.role === "row" && i.group === f.id) i.group = null; }); // rows stay, just ungrouped
     d.items.filter((i) => i.role === "cell" && ([...gone].includes(i.col) || i.row === f.id)).forEach((c) => gone.add(c.id));
     d.items = d.items.filter((i) => !gone.has(i.id)); if (f.role) d.items = layoutMatrix(d.items); return d; });
   const addToFrame = (frameId, pick, lead) => { const id = rid(); apply((d) => { const f = d.items.find((i) => i.id === frameId); if (!f) return d; const n = d.items.filter((i) => i.type === "card" && ownerOf(i, d.items)?.id === f.id).length;
@@ -425,7 +447,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
         return; }
       const before = { ...docRef.current, items: docRef.current.items.map((i) => (d.orig.has(i.id) ? { ...i, ...d.orig.get(i.id) } : i)) };
       setHistory((h) => [...h.slice(-59), before]);
-      setDoc({ ...docRef.current, items: reflow(docRef.current.items.map((i) => (d.orig.has(i.id) ? { ...i, x: snap(i.x), y: snap(i.y) } : i))) });
+      setDoc({ ...docRef.current, items: reflow(docRef.current.items.map((i) => (d.orig.has(i.id) ? { ...i, x: snap(i.x), y: snap(i.y) } : i)), new Set(d.orig.keys())) });
     }
     if (d.kind === "resize") { const before = { ...docRef.current, items: docRef.current.items.map((i) => (i.id === d.id ? { ...i, w: d.w, h: d.h } : i)) }; setHistory((h) => [...h.slice(-59), before]); setDoc({ ...docRef.current, items: docRef.current.items.map((i) => (i.id === d.id ? { ...i, w: snap(i.w), h: snap(i.h) } : i)) }); }
   };
@@ -469,6 +491,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
             <button className="tb" onClick={addGroup} title="Add a group of verticals across the top (e.g. Stays)"><Plus size={13} strokeWidth={1.8} /> Group</button>
             <button className="tb" onClick={() => addCol(selFrame?.role === "group" ? selFrame.id : selFrame?.role === "col" ? selFrame.group : null)} title="Add a vertical (column) — into the selected group"><Plus size={13} strokeWidth={1.8} /> Vertical</button>
             <button className="tb" onClick={addRow} title="Add a function (row) — Product, Engineering…"><Plus size={13} strokeWidth={1.8} /> Function</button>
+            <button className="tb" onClick={addRowGroup} title="Add a band down the left that groups the selected function rows (e.g. CCO)"><Plus size={13} strokeWidth={1.8} /> Row group</button>
             <button className="tb" onClick={relayout} title="Snap the matrix back into a clean grid"><LayoutGrid size={14} strokeWidth={1.7} /> Re-layout</button>
           </>) : <button className="tb" onClick={startMatrix} title="Start a matrix: verticals across, functions down, people where they meet"><LayoutGrid size={14} strokeWidth={1.7} /> Start a matrix</button>}
           <button className={`tb ${linkFrom ? "tb-primary" : ""}`} disabled={!linkFrom && !(sel.size === 1 && byId.get([...sel][0])?.type === "card")} onClick={() => setLinkFrom(linkFrom ? null : [...sel][0])} title="Select a person, then click the person they have a dotted line to"><Link2 size={14} strokeWidth={1.7} /> {linkFrom ? "Click the other person…" : "Dotted line"}</button>
@@ -517,8 +540,9 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
           {frames.map((f) => (
             <div key={f.id} data-id={f.id} className={`cv-frame ${f.role ? `cv-${f.role}` : ""} ${sel.has(f.id) ? "cv-sel" : ""}`} style={{ left: f.x, top: f.y, width: f.w, height: f.h, background: f.role === "group" ? f.color : f.role === "col" ? "#fffdf8" : f.role ? undefined : (f.tint || TINTS[0]), "--g": f.role === "col" ? (byId.get(f.group)?.color || "#8a7d6c") : f.color }}
               onPointerDown={(e) => onItemDown(e, f)} onDoubleClick={(e) => { e.stopPropagation(); if (f.role !== "cell") setEditingLabel(f.id); }}>
-              {(f.role === "cell" || f.role === "row") && <button className="cv-cell-add" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { const rr = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "cell", frameId: f.id, rect: { left: rr.left, top: rr.top, bottom: rr.bottom } }); }} title="Add people here"><Plus size={12} strokeWidth={2} /></button>}
-              {f.role === "group" && sel.has(f.id) && <div className="cv-tint-row" onPointerDown={(e) => e.stopPropagation()}>{GROUP_COLORS.map((t) => <button key={t} className={`cv-tint ${f.color === t ? "cv-tint-on" : ""}`} style={{ background: t }} onClick={() => update(f.id, { color: t })} />)}</div>}
+              {f.role === "cell" && <button className="cv-cell-add" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { const rr = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "cell", frameId: f.id, rect: { left: rr.left, top: rr.top, bottom: rr.bottom } }); }} title="Add people here"><Plus size={12} strokeWidth={2} /></button>}
+              {(f.role === "rgroup" || f.role === "row") && <button className="cv-cell-add" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { const rr = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "cell", frameId: f.id, rect: { left: rr.left, top: rr.top, bottom: rr.bottom } }); }} title="Add people here"><Plus size={12} strokeWidth={2} /></button>}
+              {(f.role === "group" || f.role === "rgroup") && sel.has(f.id) && <div className="cv-tint-row" onPointerDown={(e) => e.stopPropagation()}>{GROUP_COLORS.map((t) => <button key={t} className={`cv-tint ${f.color === t ? "cv-tint-on" : ""}`} style={{ background: t }} onClick={() => update(f.id, { color: t })} />)}</div>}
               {editingLabel === f.id
                 ? <input autoFocus className="cv-frame-input" defaultValue={f.label} onPointerDown={(e) => e.stopPropagation()} onBlur={(e) => { update(f.id, { label: e.target.value.trim() }); setEditingLabel(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditingLabel(null); }} placeholder="Name this box" />
                 : f.role !== "cell" && <div className={`cv-frame-label ${f.label ? "" : "cv-frame-label-empty"}`}>{f.label || "Double-click to name"}</div>}
@@ -560,7 +584,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
       </div>
 
       {picker && <PeoplePicker ctx={picker.mode === "head" ? { title: "Who heads this org?", hint: "Levels are counted from this person.", clearable: !!doc.headRef }
-        : picker.mode === "cell" ? (() => { const f = byId.get(picker.frameId); const r = f?.role === "cell" ? byId.get(f.row) : f; const c = f?.role === "cell" ? byId.get(f.col) : null; const heads = (r ? items.filter((i) => i.type === "card" && i.ref && ownerOf(i, items)?.id === r.id).map((i) => i.ref) : []); return { title: `${r?.label || "Function"}${c ? ` × ${c.label || "vertical"}` : ""}`, anchors: [...new Set([...heads, doc.headRef].filter(Boolean))].map((id) => ({ id, label: `${person(id)?.name || "?"}'s org` })), byTeam: true, multi: true, allowNew: true, taken: new Set(f ? items.filter((i) => i.ref && ownerOf(i, items)?.id === f.id).map((i) => i.ref) : []) }; })()
+        : picker.mode === "cell" ? (() => { const f = byId.get(picker.frameId); const r = f?.role === "cell" ? byId.get(f.row) : f; const c = f?.role === "cell" ? byId.get(f.col) : null; const rg = r?.role === "row" && r.group ? byId.get(r.group) : null; const heads = (r ? items.filter((i) => i.type === "card" && i.ref && (ownerOf(i, items)?.id === r.id || (rg && ownerOf(i, items)?.id === rg.id))).map((i) => i.ref) : []); return { title: `${r?.label || "Function"}${c ? ` × ${c.label || "vertical"}` : ""}`, anchors: [...new Set([...heads, doc.headRef].filter(Boolean))].map((id) => ({ id, label: `${person(id)?.name || "?"}'s org` })), byTeam: true, multi: true, allowNew: true, taken: new Set(f ? items.filter((i) => i.ref && ownerOf(i, items)?.id === f.id).map((i) => i.ref) : []) }; })()
         : picker.mode === "linkTo" ? { title: `Dotted line from ${person(byId.get(picker.from)?.ref)?.name || byId.get(picker.from)?.name || "this person"} to…`, anchors: doc.headRef ? [{ id: doc.headRef, label: `${headP?.name}'s org` }] : [], byTeam: true, allowNew: true }
         : { title: "Add people to the canvas", anchors: doc.headRef ? [{ id: doc.headRef, label: `${headP?.name}'s org` }] : [], byTeam: true, multi: true, allowNew: true, taken: new Set(items.filter((i) => i.ref).map((i) => i.ref)) }}
         rect={picker.rect} source={source} onPick={onPick} onClose={() => setPicker(null)} />}
@@ -625,6 +649,9 @@ const cvStyles = `
 .cv-group .cv-frame-label { color: #fff; text-align: center; left: 12px; right: 12px; top: 12px; font-size: 15.5px; } .cv-group .cv-frame-label-empty { color: rgba(255,255,255,.75); }
 .cv-col { border: 1.5px solid #d6cdb8; border-top: 6px solid var(--g); border-radius: 8px; }
 .cv-col .cv-frame-label { top: 14px; text-align: center; left: 10px; right: 10px; white-space: normal; line-height: 1.2; font-size: 14px; }
+.cv-rgroup { border: none; border-radius: 10px; background: color-mix(in srgb, var(--g) 14%, #fffdf8); box-shadow: inset 5px 0 0 var(--g); }
+.cv-rgroup .cv-frame-label { left: 16px; top: 10px; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--g); }
+.cv-rgroup .cv-cell-add { opacity: 0; } .cv-rgroup:hover .cv-cell-add, .cv-rgroup.cv-sel .cv-cell-add { opacity: 1; }
 .cv-row { background: #fffdf8; border: 1.5px solid #d6cdb8; border-radius: 10px; }
 .cv-row .cv-frame-label { top: 9px; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
 .cv-cell { background: rgba(255,253,248,.85); border: 1.5px solid #e2dac8; border-radius: 10px; }
