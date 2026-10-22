@@ -27,8 +27,9 @@ import { PeoplePicker, place, buildSource, initials, mxStyles } from "./MatrixBo
 const rid = () => Math.random().toString(36).slice(2, 10);
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const GROUP_COLORS = ["#3b6ea5", "#6d5aa8", "#5b7a3f", "#b07d2a", "#b8442a", "#2f7f86"];
-const ROWHEAD_W = 212, COL_W = 232, MGAP = 22, GROUP_H = 46, COLHEAD_H = 58, CPAD = 12, CGAP = 8;
+const ROWHEAD_W = 224, COL_W = 232, MGAP = 22, GROUP_H = 46, COLHEAD_H = 58, CPAD = 12, CGAP = 8, ROWLABEL_H = 34;
 const cellH = (n) => Math.max(76, CPAD * 2 + n * CARD_H + Math.max(0, n - 1) * CGAP);
+const rowHeadH = (n) => ROWLABEL_H + Math.max(1, n) * CARD_H + Math.max(0, n - 1) * CGAP + CPAD; // label on top, head card(s) under it
 // Snap the matrix scaffold into a clean grid: verticals across (grouped), functions down, cells at
 // the intersections sized to what they hold. Cards inside a cell stack top-down, lead first.
 const layoutMatrix = (items) => {
@@ -46,9 +47,9 @@ const layoutMatrix = (items) => {
   rows.forEach((r) => {
     const headCards = (() => { const fr = rectOf(r); return items.filter((i) => i.type === "card" && inside(rectOf(i), fr)); })();
     const rowCells = cols.map((c) => { let cell = cellsOf(r, c)[0]; return { c, cell, cards: cell ? cardsIn(cell) : [] }; });
-    const h = Math.max(cellH(Math.max(1, headCards.length)), ...rowCells.map((x) => cellH(x.cards.length)));
+    const h = Math.max(rowHeadH(headCards.length), ...rowCells.map((x) => cellH(x.cards.length)));
     r.x = 0; r.y = y; r.w = ROWHEAD_W; r.h = h;
-    headCards.forEach((k, i) => { k.x = r.x + (ROWHEAD_W - CARD_W) / 2; k.y = r.y + 34 + i * (CARD_H + CGAP); });
+    headCards.forEach((k, i) => { k.x = r.x + (ROWHEAD_W - CARD_W) / 2; k.y = r.y + ROWLABEL_H + i * (CARD_H + CGAP); });
     rowCells.forEach(({ c, cell, cards }) => { if (!cell) return; cell.x = colX.get(c.id); cell.y = y; cell.w = COL_W; cell.h = h; cards.forEach((k, i) => { k.x = cell.x + (COL_W - CARD_W) / 2; k.y = cell.y + CPAD + i * (CARD_H + CGAP); }); });
     y += h + MGAP;
   });
@@ -87,11 +88,11 @@ export const canvasFromMatrix = (m) => {
   groups.forEach((g) => { const t = g.src; const subs = t.subs && t.subs.length ? t.subs : [{ id: t.id, label: t.label, headRef: t.headRef, headName: t.headName }]; subs.forEach((sub) => cols.push({ id: rid(), type: "frame", role: "col", group: g.id, label: sub.label || "", x: 0, y: 0, w: COL_W, h: COLHEAD_H, src: sub, laneId: sub.id })); delete g.src; });
   const rows = [];
   const firstHead = (m.top || []).find((t) => t.headRef)?.headRef || null;
-  const productRow = { id: rid(), type: "frame", role: "row", label: "Product", x: 0, y: 0, w: ROWHEAD_W, h: 76 };
+  const productRow = { id: rid(), type: "frame", role: "row", label: "Product", x: 0, y: 0, w: ROWHEAD_W, h: rowHeadH(1) };
   rows.push(productRow);
   if (firstHead) items.push({ id: rid(), type: "card", x: 0, y: 0, ref: firstHead, name: "", title: "", cat: "auto", lead: true, _in: productRow.id });
   (m.left || []).forEach((t) => {
-    const r = { id: rid(), type: "frame", role: "row", label: t.label || "", x: 0, y: 0, w: ROWHEAD_W, h: 76, lanes: (t.subs && t.subs.length ? t.subs.map((x) => x.id) : [t.id]) };
+    const r = { id: rid(), type: "frame", role: "row", label: t.label || "", x: 0, y: 0, w: ROWHEAD_W, h: rowHeadH(1), lanes: (t.subs && t.subs.length ? t.subs.map((x) => x.id) : [t.id]) };
     rows.push(r);
     if (t.headRef || t.headName) items.push({ id: rid(), type: "card", x: 0, y: 0, ref: t.headRef || null, name: t.headRef ? "" : t.headName, title: "", cat: t.headRef ? "auto" : "hire", lead: true, _in: r.id });
   });
@@ -289,11 +290,11 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const startMatrix = () => apply((d) => {
     const g = { id: rid(), type: "frame", role: "group", label: "Connect", color: GROUP_COLORS[0], x: 0, y: 0, w: COL_W, h: GROUP_H };
     const c = { id: rid(), type: "frame", role: "col", group: g.id, label: "First vertical", x: 0, y: 0, w: COL_W, h: COLHEAD_H };
-    const r = { id: rid(), type: "frame", role: "row", label: "Product", x: 0, y: 0, w: ROWHEAD_W, h: 76 };
+    const r = { id: rid(), type: "frame", role: "row", label: "Product", x: 0, y: 0, w: ROWHEAD_W, h: rowHeadH(1) };
     d.items.push(g, c, r); d.items = layoutMatrix(ensureCells(d.items)); return d; });
   const addGroup = () => { const id = rid(); apply((d) => { const n = d.items.filter((i) => i.role === "group").length; d.items.push({ id, type: "frame", role: "group", label: "", color: GROUP_COLORS[n % GROUP_COLORS.length], x: 0, y: 0, w: COL_W, h: GROUP_H }); d.items.push({ id: rid(), type: "frame", role: "col", group: id, label: "", x: 0, y: 0, w: COL_W, h: COLHEAD_H }); d.items = layoutMatrix(ensureCells(d.items)); return d; }); setEditingLabel(id); };
   const addCol = (groupId) => { const id = rid(); apply((d) => { const gid = groupId || (d.items.filter((i) => i.role === "group").slice(-1)[0] || {}).id || null; d.items.push({ id, type: "frame", role: "col", group: gid, label: "", x: 0, y: 0, w: COL_W, h: COLHEAD_H }); d.items = layoutMatrix(ensureCells(d.items)); return d; }); setEditingLabel(id); };
-  const addRow = () => { const id = rid(); apply((d) => { d.items.push({ id, type: "frame", role: "row", label: "", x: 0, y: 0, w: ROWHEAD_W, h: 76 }); d.items = layoutMatrix(ensureCells(d.items)); return d; }); setEditingLabel(id); };
+  const addRow = () => { const id = rid(); apply((d) => { d.items.push({ id, type: "frame", role: "row", label: "", x: 0, y: 0, w: ROWHEAD_W, h: rowHeadH(1) }); d.items = layoutMatrix(ensureCells(d.items)); return d; }); setEditingLabel(id); };
   const removeFrame = (f) => apply((d) => { // a scaffold piece takes its cells (not their people) with it
     const gone = new Set([f.id]);
     if (f.role === "group") d.items.filter((i) => i.role === "col" && i.group === f.id).forEach((c) => gone.add(c.id));
