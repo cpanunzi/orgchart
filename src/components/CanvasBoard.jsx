@@ -96,6 +96,13 @@ const orderScaffold = (items, moved = new Set()) => {
   const rest = items.filter((i) => !i.role);
   return [...groups, ...rgroups, ...cols, ...rows, ...cells, ...rest];
 };
+// functions ↔ verticals: bands follow, cells keep their people (merged cells are split)
+const transposeItems = (items) => {
+  const swap = { group: "rgroup", rgroup: "group", col: "row", row: "col" };
+  items.forEach((i) => { if (i.role === "cell") { const r = i.row; i.row = i.col; i.col = r; delete i.span; delete i.headId; } else if (swap[i.role]) { i.role = swap[i.role]; if (i.role === "group" || i.role === "rgroup") i.color = i.color || GROUP_COLORS[0]; } });
+  items.forEach((i) => { if (i.role === "row" || i.role === "col") i._keep = true; });
+  return items;
+};
 const ensureCells = (items) => {
   const rows = items.filter((i) => i.role === "row"), groups = items.filter((i) => i.role === "group");
   const cols = items.filter((i) => i.role === "col").sort((a, b) => groups.findIndex((g) => g.id === a.group) - groups.findIndex((g) => g.id === b.group));
@@ -182,7 +189,8 @@ export const canvasFromMatrix = (m) => {
   // frames need distinct positions for "inside" to resolve: give every frame its own slot first
   let k = 0; all.forEach((f) => { if (f.type === "frame") { f.x = (k % 8) * 300; f.y = Math.floor(k / 8) * 300; k++; } });
   all.forEach((i) => { if (i._in) { const f = all.find((x) => x.id === i._in); i.x = f.x + 8; i.y = f.y + 8; delete i._in; } });
-  return { items: layoutMatrix(all), links: [] };
+  // default orientation: functions (Product, Engineering…) across the top, verticals down the side
+  return { items: layoutMatrix(ensureCells(orderScaffold(transposeItems(layoutMatrix(all))))), links: [] };
 };
 
 export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
@@ -380,9 +388,9 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const reflow = (its, moved) => (its.some((i) => i.role) ? layoutMatrix(ensureCells(orderScaffold(its, moved))) : its);
   const relayout = () => apply((d) => { d.items = reflow(d.items); return d; });
   const startMatrix = () => apply((d) => {
-    const g = { id: rid(), type: "frame", role: "group", label: "Connect", color: GROUP_COLORS[0], x: 0, y: 0, w: COL_W, h: GROUP_H };
-    const c = { id: rid(), type: "frame", role: "col", group: g.id, label: "First vertical", x: 0, y: 0, w: COL_W, h: COLHEAD_H };
-    const r = { id: rid(), type: "frame", role: "row", label: "Product", x: 0, y: 0, w: ROWHEAD_W, h: rowHeadH(1) };
+    const g = { id: rid(), type: "frame", role: "group", label: "Leadership", color: GROUP_COLORS[0], x: 0, y: 0, w: COL_W, h: GROUP_H };
+    const c = { id: rid(), type: "frame", role: "col", group: g.id, label: "Product", x: 0, y: 0, w: COL_W, h: COLHEAD_H };
+    const r = { id: rid(), type: "frame", role: "row", label: "First vertical", x: 0, y: 0, w: ROWHEAD_W, h: rowHeadH(1) };
     d.items.push(g, c, r); d.items = layoutMatrix(ensureCells(d.items)); return d; });
   const addGroup = () => { const id = rid(); apply((d) => { const n = d.items.filter((i) => i.role === "group").length; d.items.push({ id, type: "frame", role: "group", label: "", color: GROUP_COLORS[n % GROUP_COLORS.length], x: 1e9, y: 0, w: COL_W, h: GROUP_H }); d.items.push({ id: rid(), type: "frame", role: "col", group: id, label: "", x: 1e9, y: 0, w: COL_W, h: COLHEAD_H }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
   const addCol = (groupId) => { const id = rid(); apply((d) => { const gid = groupId || (d.items.filter((i) => i.role === "group").slice(-1)[0] || {}).id || null; const g = d.items.find((i) => i.id === gid); d.items.push({ id, type: "frame", role: "col", group: gid, label: "", x: g ? g.x + g.w - COL_W / 2 : 1e9, y: 0, w: COL_W, h: COLHEAD_H }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
@@ -409,11 +417,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     apply((d) => { const keep = d.items.find((i) => i.id === first.id); keep.span = span; const others = selCells.filter((c) => c.id !== first.id).map((c) => c.id);
       d.items.forEach((i) => { if (i.type === "card" && others.includes(i.in)) { i.in = keep.id; i.x = keep.x + CPAD; i.y = keep.y + CPAD; } });
       d.items = d.items.filter((i) => !others.includes(i.id)); d.items = reflow(d.items); return d; }); setSel(new Set([first.id])); };
-  const transpose = () => apply((d) => { // functions ↔ verticals, bands follow, cells keep their people
-    const swap = { group: "rgroup", rgroup: "group", col: "row", row: "col" };
-    d.items.forEach((i) => { if (i.role === "cell") { const r = i.row; i.row = i.col; i.col = r; delete i.span; delete i.headId; } else if (swap[i.role]) { i.role = swap[i.role]; if (i.role === "group" || i.role === "rgroup") i.color = i.color || GROUP_COLORS[0]; } });
-    d.items.filter((i) => i.role === "row" || i.role === "col").forEach((i) => { i._keep = true; });
-    d.items = reflow(d.items); return d; });
+  const transpose = () => apply((d) => { d.items = reflow(transposeItems(d.items)); return d; });
   const splitCell = (cell) => apply((d) => { const c = d.items.find((i) => i.id === cell.id); if (c) delete c.span; d.items = reflow(d.items); return d; });
   const setLegend = (cat, patch) => apply((d) => { d.legend = { ...DEFAULT_LEGEND, ...(d.legend || {}) }; d.legend[cat] = { ...d.legend[cat], ...patch }; return d; });
 
@@ -511,12 +515,12 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
           <button className="tb" onClick={addFrame} title="Add a free box"><Square size={14} strokeWidth={1.7} /> Box</button>
           <span className="tb-sep" />
           {hasMatrix ? (<>
-            <button className="tb" onClick={addGroup} title="Add a group of verticals across the top (e.g. Stays)"><Plus size={13} strokeWidth={1.8} /> Group</button>
-            <button className="tb" onClick={() => addCol(selFrame?.role === "group" ? selFrame.id : selFrame?.role === "col" ? selFrame.group : null)} title="Add a vertical (column) — into the selected group"><Plus size={13} strokeWidth={1.8} /> Vertical</button>
-            <button className="tb" onClick={addRow} title="Add a function (row) — Product, Engineering…"><Plus size={13} strokeWidth={1.8} /> Function</button>
-            <button className="tb" onClick={addRowGroup} title="Add a band down the left that groups the selected function rows (e.g. CCO)"><Plus size={13} strokeWidth={1.8} /> Row group</button>
+            <button className="tb" onClick={addGroup} title="Add a band across the top that groups columns (e.g. CPTO)"><Plus size={13} strokeWidth={1.8} /> Column group</button>
+            <button className="tb" onClick={() => addCol(selFrame?.role === "group" ? selFrame.id : selFrame?.role === "col" ? selFrame.group : null)} title="Add a column — into the selected band"><Plus size={13} strokeWidth={1.8} /> Column</button>
+            <button className="tb" onClick={addRow} title="Add a row"><Plus size={13} strokeWidth={1.8} /> Row</button>
+            <button className="tb" onClick={addRowGroup} title="Add a band down the left that groups the selected rows (e.g. Stays)"><Plus size={13} strokeWidth={1.8} /> Row group</button>
             <button className="tb" onClick={relayout} title="Snap the matrix back into a clean grid"><LayoutGrid size={14} strokeWidth={1.7} /> Re-layout</button>
-            <button className="tb" onClick={() => { if (window.confirm("Swap rows and columns? Functions go across the top, verticals down the side. Merged cells are split.")) transpose(); }} title="Swap rows ↔ columns"><ArrowLeftRight size={14} strokeWidth={1.7} /> Swap</button>
+            <button className="tb" onClick={() => { if (window.confirm("Swap rows and columns? Merged cells are split.")) transpose(); }} title="Swap rows ↔ columns"><ArrowLeftRight size={14} strokeWidth={1.7} /> Swap</button>
           </>) : <button className="tb" onClick={startMatrix} title="Start a matrix: verticals across, functions down, people where they meet"><LayoutGrid size={14} strokeWidth={1.7} /> Start a matrix</button>}
           <button className={`tb ${linkFrom ? "tb-primary" : ""}`} disabled={!linkFrom && !(sel.size === 1 && byId.get([...sel][0])?.type === "card")} onClick={() => setLinkFrom(linkFrom ? null : [...sel][0])} title="Select a person, then click the person they have a dotted line to"><Link2 size={14} strokeWidth={1.7} /> {linkFrom ? "Click the other person…" : "Dotted line"}</button>
           {mergeable && <button className="tb" onClick={mergeCells} title="Merge these cells into one across the verticals"><LayoutGrid size={14} strokeWidth={1.7} /> Merge {selCells.length}</button>}
