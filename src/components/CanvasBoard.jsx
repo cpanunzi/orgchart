@@ -30,7 +30,7 @@ import { PeoplePicker, place, buildSource, initials, mxStyles } from "./MatrixBo
 const rid = () => Math.random().toString(36).slice(2, 10);
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const GROUP_COLORS = ["#3b6ea5", "#6d5aa8", "#5b7a3f", "#b07d2a", "#b8442a", "#2f7f86"];
-const RG_W = 196, ROWHEAD_W = 224, COL_W = 232, MGAP = 22, GROUP_H = 46, COLHEAD_H = 58, CPAD = 12, CGAP = 8, ROWLABEL_H = 34;
+const RG_W = 232, ROWHEAD_W = 224, COL_W = 232, MGAP = 22, GROUP_H = 46, COLHEAD_H = 58, CPAD = 12, CGAP = 8, ROWLABEL_H = 34;
 const cellH = (n) => Math.max(76, CPAD * 2 + n * CARD_H + Math.max(0, n - 1) * CGAP);
 const rowHeadH = (n) => ROWLABEL_H + Math.max(1, n) * CARD_H + Math.max(0, n - 1) * CGAP + CPAD; // label on top, head card(s) under it
 // Snap the matrix scaffold into a clean grid: verticals across (grouped), functions down, cells at
@@ -47,7 +47,7 @@ const layoutMatrix = (items) => {
   const cardsIn = (cell) => { return items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === cell.id).sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0) || a.y - b.y || a.x - b.x); };
   const colX = new Map(); cols.forEach((c, i) => colX.set(c.id, LEFT + ROWHEAD_W + MGAP + i * (COL_W + MGAP)));
   const top = groups.length ? GROUP_H + 10 : 0;
-  groups.forEach((g) => { const gc = cols.filter((c) => c.group === g.id); if (!gc.length) { g.w = COL_W; g.h = GROUP_H; return; } g.x = colX.get(gc[0].id); g.y = 0; g.w = colX.get(gc[gc.length - 1].id) + COL_W - g.x; g.h = GROUP_H; });
+  groups.forEach((g) => { const gc = cols.filter((c) => c.group === g.id); if (!gc.length) { g.w = COL_W; g.h = GROUP_H; return; } const xs = gc.map((c) => colX.get(c.id)); g.x = Math.min(...xs); g.y = 0; g.w = Math.max(...xs) + COL_W - g.x; g.h = GROUP_H; });
   cols.forEach((c) => { c.x = colX.get(c.id); c.y = top; c.w = COL_W; c.h = COLHEAD_H; });
   let y = top + COLHEAD_H + MGAP;
   rows.forEach((r) => {
