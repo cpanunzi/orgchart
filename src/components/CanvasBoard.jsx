@@ -200,7 +200,10 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const [spaceDown, setSpaceDown] = useState(false);
   const [freeze, setFreezeState] = useState(() => { try { return localStorage.getItem(`atelier-canvas-freeze:${chartId}`) !== "off"; } catch { return true; } });
   const setFreeze = (v) => { setFreezeState(v); try { localStorage.setItem(`atelier-canvas-freeze:${chartId}`, v ? "on" : "off"); } catch { /* ignore */ } };
-  const [dragIds, setDragIds] = useState(() => new Set()); // cards being dragged render in the main layer so they don't jump between pinned layers
+  const [dragIds, setDragIds] = useState(() => new Set());
+  const PIN_PAD = 10;
+  const pinInfo = () => { const v = viewRef.current; const on = freeze && (docRef.current?.items || []).some((i) => i.role); return { on, pinX: on ? Math.max(v.x, PIN_PAD) : v.x, pinY: on ? Math.max(v.y, PIN_PAD) : v.y }; };
+  const pinLayerOf = (it, all) => { if (it.type === "frame") return it.role === "group" || it.role === "col" ? "top" : it.role === "row" || it.role === "rgroup" ? "left" : "main"; const o = it.in && all.find((x) => x.id === it.in); return o && (o.role === "row" || o.role === "rgroup") ? "left" : "main"; }; // cards being dragged render in the main layer so they don't jump between pinned layers
   const docRef = useRef(null); const viewRef = useRef(view); viewRef.current = view;
   const selRef = useRef(sel); selRef.current = sel;
   const linkFromRef = useRef(null); linkFromRef.current = linkFrom;
@@ -421,8 +424,11 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     else if (!next.has(it.id)) next = new Set([it.id]);
     setSel(next); setSelLink(null);
     const ids = withContents([...next]); const start = toWorld(e.clientX, e.clientY);
-    const orig = new Map(ids.map((id) => { const o = byId.get(id); return [id, { x: o.x, y: o.y }]; }));
-    dragRef.current = { kind: "move", ids, start, orig, moved: false, clickId: it.id }; setDragIds(new Set(ids));
+    const pin = pinInfo(); const v = viewRef.current; const sx = (pin.pinX - v.x) / v.z, sy = (pin.pinY - v.y) / v.z; // pinned strip vs canvas offset, in world units
+    const preShift = new Map(ids.map((id) => { const o = byId.get(id); return [id, { x: o.x, y: o.y }]; }));
+    if (pin.on && (sx || sy)) { const all = docRef.current.items; const n = { ...docRef.current, items: all.map((i) => { if (!ids.includes(i.id)) return i; const layer = pinLayerOf(i, all); return layer === "left" ? { ...i, x: i.x + sx } : layer === "top" ? { ...i, y: i.y + sy } : i; }) }; docRef.current = n; setDocState(n); }
+    const orig = new Map(ids.map((id) => { const o = docRef.current.items.find((i) => i.id === id); return [id, { x: o.x, y: o.y }]; }));
+    dragRef.current = { kind: "move", ids, start, orig, preShift, moved: false, clickId: it.id }; setDragIds(new Set(ids));
     try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* synthetic events have no active pointer */ }
   };
   const onResizeDown = (e, it) => { e.stopPropagation(); if (e.button !== 0) return; const start = toWorld(e.clientX, e.clientY); dragRef.current = { kind: "resize", id: it.id, start, w: it.w, h: it.h }; setSel(new Set([it.id])); };
@@ -447,9 +453,10 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     if (!d) return;
     if (d.kind === "move") {
       if (!d.moved) { // a plain click on a card opens its menu
+        if (d.preShift) { const n = { ...docRef.current, items: docRef.current.items.map((i) => (d.preShift.has(i.id) ? { ...i, ...d.preShift.get(i.id) } : i)) }; docRef.current = n; setDocState(n); }
         const it = byId.get(d.clickId); if (it && it.type === "card" && !e.shiftKey) { const el = document.querySelector(`[data-id="${it.id}"]`); const r = el.getBoundingClientRect(); setMenu({ id: it.id, rect: { left: r.left, top: r.top, bottom: r.bottom } }); }
         return; }
-      const before = { ...docRef.current, items: docRef.current.items.map((i) => (d.orig.has(i.id) ? { ...i, ...d.orig.get(i.id) } : i)) };
+      const before = { ...docRef.current, items: docRef.current.items.map((i) => (d.preShift?.has(i.id) ? { ...i, ...d.preShift.get(i.id) } : d.orig.has(i.id) ? { ...i, ...d.orig.get(i.id) } : i)) };
       setHistory((h) => [...h.slice(-59), before]);
       setDoc({ ...docRef.current, items: reflow(docRef.current.items.map((i) => (d.orig.has(i.id) ? { ...i, x: snap(i.x), y: snap(i.y) } : i)), new Set(d.orig.keys())) });
     }
@@ -535,11 +542,11 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
         // frozen panes: the top header strip (group bands + vertical headers) pins to the top edge
         // when you scroll past it; the left strip (row-group bands + function heads) pins to the
         // left edge. Everything else scrolls underneath.
-        const PAD = 10; const pinned = freeze && hasMatrix;
+        const PAD = PIN_PAD; const pinned = freeze && hasMatrix;
         const pinY = pinned ? Math.max(view.y, PAD) : view.y, pinX = pinned ? Math.max(view.x, PAD) : view.x;
         const hasGroups = items.some((i) => i.role === "group"), hasRG = items.some((i) => i.role === "rgroup");
         const headerBottom = (hasGroups ? GROUP_H + 10 : 0) + COLHEAD_H, leftRight = (hasRG ? RG_W + MGAP : 0) + ROWHEAD_W;
-        const layerOf = (it) => { if (!pinned) return "main"; if (it.type === "frame") return it.role === "group" || it.role === "col" ? "top" : it.role === "row" || it.role === "rgroup" ? "left" : "main"; if (dragIds.has(it.id)) return "main"; const o = it.in && byId.get(it.in); return o && (o.role === "row" || o.role === "rgroup") ? "left" : "main"; };
+        const layerOf = (it) => (!pinned || dragIds.has(it.id)) ? "main" : pinLayerOf(it, items);
         const frameEl = (f) => (
             <div key={f.id} data-id={f.id} className={`cv-frame ${f.role ? `cv-${f.role}` : ""} ${sel.has(f.id) ? "cv-sel" : ""}`} style={{ left: f.x, top: f.y, width: f.w, height: f.h, background: f.role === "group" ? f.color : f.role === "col" ? "#fffdf8" : f.role ? undefined : (f.tint || TINTS[0]), "--g": f.role === "col" ? (byId.get(f.group)?.color || "#8a7d6c") : f.color }}
               onPointerDown={(e) => onItemDown(e, f)} onDoubleClick={(e) => { e.stopPropagation(); if (f.role !== "cell") setEditingLabel(f.id); }}>
