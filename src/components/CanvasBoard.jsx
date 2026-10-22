@@ -420,9 +420,12 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const selCells = [...sel].map((id) => byId.get(id)).filter((i) => i?.role === "cell");
   const rowOrder = items.filter((i) => i.role === "row").map((r) => r.id);
   const contiguous = (idx) => { for (let i = 1; i < idx.length; i++) if (idx[i] !== idx[i - 1] + 1) return false; return true; };
-  const mergeable = (() => { if (selCells.length < 2 || selCells.some((c) => c.span > 1 || c.vspan > 1)) return null;
-    if (new Set(selCells.map((c) => c.row)).size === 1) { const idx = selCells.map((c) => colOrder.indexOf(c.col)).sort((a, b) => a - b); return contiguous(idx) ? { dir: "across", idx } : null; }
-    if (new Set(selCells.map((c) => c.col)).size === 1) { const idx = selCells.map((c) => rowOrder.indexOf(c.row)).sort((a, b) => a - b); return contiguous(idx) ? { dir: "down", idx } : null; }
+  // merging: cells side by side in a row, or stacked in a column — an already-merged cell can be
+  // merged further with its neighbours (the ranges it covers just have to join up)
+  const mergeable = (() => { if (selCells.length < 2) return null;
+    const expand = (c, dir) => { const i0 = dir === "across" ? colOrder.indexOf(c.col) : rowOrder.indexOf(c.row); const n = dir === "across" ? (c.span || 1) : (c.vspan || 1); return Array.from({ length: n }, (_, k) => i0 + k); };
+    if (new Set(selCells.map((c) => c.row)).size === 1 && new Set(selCells.map((c) => c.vspan || 1)).size === 1) { const idx = [...new Set(selCells.flatMap((c) => expand(c, "across")))].sort((a, b) => a - b); return contiguous(idx) ? { dir: "across", idx } : null; }
+    if (new Set(selCells.map((c) => c.col)).size === 1 && new Set(selCells.map((c) => c.span || 1)).size === 1) { const idx = [...new Set(selCells.flatMap((c) => expand(c, "down")))].sort((a, b) => a - b); return contiguous(idx) ? { dir: "down", idx } : null; }
     return null; })();
   const mergeCells = () => { if (!mergeable) return; const { dir, idx } = mergeable; const first = selCells.find((c) => (dir === "across" ? colOrder.indexOf(c.col) : rowOrder.indexOf(c.row)) === idx[0]); const n = idx[idx.length - 1] - idx[0] + 1;
     apply((d) => { const keep = d.items.find((i) => i.id === first.id); if (dir === "across") keep.span = n; else keep.vspan = n; const others = selCells.filter((c) => c.id !== first.id).map((c) => c.id);
