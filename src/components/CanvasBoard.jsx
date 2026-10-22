@@ -50,11 +50,13 @@ const layoutMatrix = (items) => {
   rows.forEach((r) => {
     const headCards = items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === r.id);
     const rowCells = []; for (let ci = 0; ci < cols.length;) { const c = cols[ci]; const cell = cellsOf(r, c)[0]; const span = Math.max(1, Math.min(cell?.span || 1, cols.length - ci)); rowCells.push({ c, cell, span, cards: cell ? cardsIn(cell) : [] }); ci += span; }
-    const h = Math.max(rowHeadH(headCards.length), ...rowCells.map((x) => cellH(Math.ceil(x.cards.length / x.span))));
+    const h = Math.max(rowHeadH(headCards.length), ...rowCells.map((x) => cellH(Math.ceil(x.cards.length / Math.max(1, Math.min(x.span, x.cards.length))))));
     r.x = 0; r.y = y; r.w = ROWHEAD_W; r.h = h;
     headCards.forEach((k, i) => { k.in = r.id; k.x = r.x + (ROWHEAD_W - CARD_W) / 2; k.y = r.y + ROWLABEL_H + i * (CARD_H + CGAP); });
     rowCells.forEach(({ c, cell, span, cards }) => { if (!cell) return; cell.x = colX.get(c.id); cell.y = y; cell.w = span * COL_W + (span - 1) * MGAP; cell.h = h; if (span > 1) cell.span = span; else delete cell.span;
-      const slotW = (cell.w - 2 * CPAD) / span; cards.forEach((k, i) => { k.in = cell.id; k.x = cell.x + CPAD + (i % span) * slotW + (slotW - CARD_W) / 2; k.y = cell.y + CPAD + Math.floor(i / span) * (CARD_H + CGAP); }); });
+      // in a merged cell the cards sit together as a compact centred block, not spread across the width
+      const ncols = Math.max(1, Math.min(span, cards.length)); const blockW = ncols * CARD_W + (ncols - 1) * 16; const x0 = cell.x + (cell.w - blockW) / 2;
+      cards.forEach((k, i) => { k.in = cell.id; k.x = x0 + (i % ncols) * (CARD_W + 16); k.y = cell.y + CPAD + Math.floor(i / ncols) * (CARD_H + CGAP); }); });
     y += h + MGAP;
   });
   return items;
