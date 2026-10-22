@@ -454,11 +454,8 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     else if (!next.has(it.id)) next = new Set([it.id]);
     setSel(next); setSelLink(null);
     const ids = withContents([...next]); const start = toWorld(e.clientX, e.clientY);
-    const pin = pinInfo(); const v = viewRef.current; const sx = (pin.pinX - v.x) / v.z, sy = (pin.pinY - v.y) / v.z; // pinned strip vs canvas offset, in world units
-    const preShift = new Map(ids.map((id) => { const o = byId.get(id); return [id, { x: o.x, y: o.y }]; }));
-    if (pin.on && (sx || sy)) { const all = docRef.current.items; const n = { ...docRef.current, items: all.map((i) => { if (!ids.includes(i.id)) return i; const layer = pinLayerOf(i, all); return layer === "left" ? { ...i, x: i.x + sx } : layer === "top" ? { ...i, y: i.y + sy } : i; }) }; docRef.current = n; setDocState(n); }
-    const orig = new Map(ids.map((id) => { const o = docRef.current.items.find((i) => i.id === id); return [id, { x: o.x, y: o.y }]; }));
-    dragRef.current = { kind: "move", ids, start, orig, preShift, moved: false, clickId: it.id }; setDragIds(new Set(ids));
+    const orig = new Map(ids.map((id) => { const o = byId.get(id); return [id, { x: o.x, y: o.y }]; }));
+    dragRef.current = { kind: "move", ids, start, orig, preShift: new Map(orig), moved: false, clickId: it.id }; // layers switch only once it actually moves (a click must leave the DOM node alone, or double-click never fires)
     try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* synthetic events have no active pointer */ }
   };
   const onResizeDown = (e, it) => { e.stopPropagation(); if (e.button !== 0) return; const start = toWorld(e.clientX, e.clientY); dragRef.current = { kind: "resize", id: it.id, start, w: it.w, h: it.h }; setSel(new Set([it.id])); };
@@ -472,7 +469,14 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     const d = dragRef.current; if (!d) return;
     if (d.kind === "pan") { setView((v) => ({ ...v, x: d.vx + e.clientX - d.sx, y: d.vy + e.clientY - d.sy })); return; }
     const p = toWorld(e.clientX, e.clientY);
-    if (d.kind === "move") { const dx = p.x - d.start.x, dy = p.y - d.start.y; if (Math.abs(dx) + Math.abs(dy) > 2) d.moved = true; if (!d.moved) return;
+    if (d.kind === "move") { const dx = p.x - d.start.x, dy = p.y - d.start.y;
+      if (!d.moved && Math.abs(dx) + Math.abs(dy) > 2) { d.moved = true;
+        // items leaving a frozen strip: shift their world position by the strip's offset so they
+        // render under the pointer once they move into the scrolling layer
+        const pin = pinInfo(); const v = viewRef.current; const sx = (pin.pinX - v.x) / v.z, sy = (pin.pinY - v.y) / v.z;
+        if (pin.on && (sx || sy)) { const all = docRef.current.items; d.ids.forEach((id) => { const i = all.find((x) => x.id === id); if (!i) return; const layer = pinLayerOf(i, all); const o = d.orig.get(id); if (layer === "left") d.orig.set(id, { x: o.x + sx, y: o.y }); else if (layer === "top") d.orig.set(id, { x: o.x, y: o.y + sy }); }); }
+        setDragIds(new Set(d.ids)); }
+      if (!d.moved) return;
       setDocState((cur) => { const n = { ...cur, items: cur.items.map((i) => (d.orig.has(i.id) ? { ...i, x: d.orig.get(i.id).x + dx, y: d.orig.get(i.id).y + dy } : i)) }; docRef.current = n; return n; }); return; }
     if (d.kind === "resize") { setDocState((cur) => { const n = { ...cur, items: cur.items.map((i) => (i.id === d.id ? { ...i, w: Math.max(160, d.w + p.x - d.start.x), h: Math.max(80, d.h + p.y - d.start.y) } : i)) }; docRef.current = n; return n; }); return; }
     if (d.kind === "marquee") { const r = { x: Math.min(d.start.x, p.x), y: Math.min(d.start.y, p.y), w: Math.abs(p.x - d.start.x), h: Math.abs(p.y - d.start.y) }; setMarquee(r);
