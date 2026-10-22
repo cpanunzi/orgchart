@@ -20,7 +20,8 @@ import { PeoplePicker, place, buildSource, initials, mxStyles } from "./MatrixBo
 //   group  : a band across the top that a set of verticals belong to (Stays, Interfaces…)   { color }
 //   col    : a vertical (Payments & finance…)                                                 { group }
 //   row    : a function down the side (Product, Engineering) — its head card sits inside it
-//   cell   : the intersection                                     { col, row, headId? }  headId = which card in
+//   cell   : the intersection                        { col, row, headId?, span? }  span = how many verticals
+//            (this one and the next span-1 in order) the cell covers — a merged cell  headId = which card in
 //            the row box this cell reports to (default: the row box itself — i.e. its first head)
 // Cells hold cards; a card with lead:true is the lead of that cell. Dotted lines from each row
 // head and column head into every cell are drawn automatically; `layoutMatrix` snaps the whole
@@ -48,11 +49,12 @@ const layoutMatrix = (items) => {
   let y = top + COLHEAD_H + MGAP;
   rows.forEach((r) => {
     const headCards = items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === r.id);
-    const rowCells = cols.map((c) => { let cell = cellsOf(r, c)[0]; return { c, cell, cards: cell ? cardsIn(cell) : [] }; });
-    const h = Math.max(rowHeadH(headCards.length), ...rowCells.map((x) => cellH(x.cards.length)));
+    const rowCells = []; for (let ci = 0; ci < cols.length;) { const c = cols[ci]; const cell = cellsOf(r, c)[0]; const span = Math.max(1, Math.min(cell?.span || 1, cols.length - ci)); rowCells.push({ c, cell, span, cards: cell ? cardsIn(cell) : [] }); ci += span; }
+    const h = Math.max(rowHeadH(headCards.length), ...rowCells.map((x) => cellH(Math.ceil(x.cards.length / x.span))));
     r.x = 0; r.y = y; r.w = ROWHEAD_W; r.h = h;
     headCards.forEach((k, i) => { k.in = r.id; k.x = r.x + (ROWHEAD_W - CARD_W) / 2; k.y = r.y + ROWLABEL_H + i * (CARD_H + CGAP); });
-    rowCells.forEach(({ c, cell, cards }) => { if (!cell) return; cell.x = colX.get(c.id); cell.y = y; cell.w = COL_W; cell.h = h; cards.forEach((k, i) => { k.in = cell.id; k.x = cell.x + (COL_W - CARD_W) / 2; k.y = cell.y + CPAD + i * (CARD_H + CGAP); }); });
+    rowCells.forEach(({ c, cell, span, cards }) => { if (!cell) return; cell.x = colX.get(c.id); cell.y = y; cell.w = span * COL_W + (span - 1) * MGAP; cell.h = h; if (span > 1) cell.span = span; else delete cell.span;
+      const slotW = (cell.w - 2 * CPAD) / span; cards.forEach((k, i) => { k.in = cell.id; k.x = cell.x + CPAD + (i % span) * slotW + (slotW - CARD_W) / 2; k.y = cell.y + CPAD + Math.floor(i / span) * (CARD_H + CGAP); }); });
     y += h + MGAP;
   });
   return items;
@@ -70,7 +72,18 @@ const orderScaffold = (items) => {
   const rest = items.filter((i) => !i.role);
   return [...groups, ...cols, ...rows, ...cells, ...rest];
 };
-const ensureCells = (items) => { const rows = items.filter((i) => i.role === "row"), cols = items.filter((i) => i.role === "col"); rows.forEach((r) => cols.forEach((c) => { if (!items.some((x) => x.role === "cell" && x.row === r.id && x.col === c.id)) items.push({ id: rid(), type: "frame", role: "cell", row: r.id, col: c.id, x: 0, y: 0, w: COL_W, h: 76, label: "" }); })); return items; };
+const ensureCells = (items) => {
+  const rows = items.filter((i) => i.role === "row"), groups = items.filter((i) => i.role === "group");
+  const cols = items.filter((i) => i.role === "col").sort((a, b) => groups.findIndex((g) => g.id === a.group) - groups.findIndex((g) => g.id === b.group));
+  rows.forEach((r) => {
+    const covered = new Set();
+    cols.forEach((c, ci) => { if (covered.has(c.id)) return; const cell = items.find((x) => x.role === "cell" && x.row === r.id && x.col === c.id); const span = Math.max(1, Math.min(cell?.span || 1, cols.length - ci)); for (let k = 1; k < span; k++) covered.add(cols[ci + k].id); });
+    // cells under a merged cell go (their people were moved on merge); missing ones get made
+    for (let i = items.length - 1; i >= 0; i--) { const x = items[i]; if (x.role === "cell" && x.row === r.id && covered.has(x.col)) items.splice(i, 1); }
+    cols.forEach((c) => { if (covered.has(c.id)) return; if (!items.some((x) => x.role === "cell" && x.row === r.id && x.col === c.id)) items.push({ id: rid(), type: "frame", role: "cell", row: r.id, col: c.id, x: 0, y: 0, w: COL_W, h: 76, label: "" }); });
+  });
+  return items;
+};
 const CARD_W = 184, CARD_H = 60, GRID = 8;
 const snap = (v) => Math.round(v / GRID) * GRID;
 const V = 1;
@@ -349,6 +362,14 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     d.items.filter((i) => i.role === "cell" && ([...gone].includes(i.col) || i.row === f.id)).forEach((c) => gone.add(c.id));
     d.items = d.items.filter((i) => !gone.has(i.id)); if (f.role) d.items = layoutMatrix(d.items); return d; });
   const addToFrame = (frameId, pick, lead) => { const id = rid(); apply((d) => { const f = d.items.find((i) => i.id === frameId); if (!f) return d; const n = d.items.filter((i) => i.type === "card" && ownerOf(i, d.items)?.id === f.id).length; d.items.push({ id, type: "card", x: f.x + CPAD, y: f.y + CPAD + n * (CARD_H + CGAP), ref: pick.ref || null, name: pick.ref ? "" : (pick.name || ""), title: "", cat: pick.ref ? "auto" : "hire", lead: !!lead || (f.role === "cell" && n === 0) }); if (f.role) d.items = layoutMatrix(d.items); return d; }); return id; };
+  const colOrder = items.filter((i) => i.role === "col").map((c) => c.id);
+  const selCells = [...sel].map((id) => byId.get(id)).filter((i) => i?.role === "cell");
+  const mergeable = (() => { if (selCells.length < 2 || new Set(selCells.map((c) => c.row)).size !== 1) return null; const idx = selCells.map((c) => colOrder.indexOf(c.col)).sort((a, b) => a - b); for (let i = 1; i < idx.length; i++) if (idx[i] !== idx[i - 1] + 1) return null; return idx; })();
+  const mergeCells = () => { if (!mergeable) return; const first = selCells.find((c) => colOrder.indexOf(c.col) === mergeable[0]); const span = mergeable[mergeable.length - 1] - mergeable[0] + 1;
+    apply((d) => { const keep = d.items.find((i) => i.id === first.id); keep.span = span; const others = selCells.filter((c) => c.id !== first.id).map((c) => c.id);
+      d.items.forEach((i) => { if (i.type === "card" && others.includes(i.in)) { i.in = keep.id; i.x = keep.x + CPAD; i.y = keep.y + CPAD; } });
+      d.items = d.items.filter((i) => !others.includes(i.id)); d.items = reflow(d.items); return d; }); setSel(new Set([first.id])); };
+  const splitCell = (cell) => apply((d) => { const c = d.items.find((i) => i.id === cell.id); if (c) delete c.span; d.items = reflow(d.items); return d; });
   const setLegend = (cat, patch) => apply((d) => { d.legend = { ...DEFAULT_LEGEND, ...(d.legend || {}) }; d.legend[cat] = { ...d.legend[cat], ...patch }; return d; });
 
   const onPick = (pick) => {
@@ -447,6 +468,8 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
             <button className="tb" onClick={relayout} title="Snap the matrix back into a clean grid"><LayoutGrid size={14} strokeWidth={1.7} /> Re-layout</button>
           </>) : <button className="tb" onClick={startMatrix} title="Start a matrix: verticals across, functions down, people where they meet"><LayoutGrid size={14} strokeWidth={1.7} /> Start a matrix</button>}
           <button className={`tb ${linkFrom ? "tb-primary" : ""}`} disabled={!linkFrom && !(sel.size === 1 && byId.get([...sel][0])?.type === "card")} onClick={() => setLinkFrom(linkFrom ? null : [...sel][0])} title="Select a person, then click the person they have a dotted line to"><Link2 size={14} strokeWidth={1.7} /> {linkFrom ? "Click the other person…" : "Dotted line"}</button>
+          {mergeable && <button className="tb" onClick={mergeCells} title="Merge these cells into one across the verticals"><LayoutGrid size={14} strokeWidth={1.7} /> Merge {selCells.length}</button>}
+          {selFrame?.role === "cell" && selFrame.span > 1 && <button className="tb" onClick={() => splitCell(selFrame)} title="Split this merged cell back into one per vertical"><LayoutGrid size={14} strokeWidth={1.7} /> Split</button>}
           {selFrame?.role === "cell" && (() => { const r = byId.get(selFrame.row); const heads = r ? items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === r.id) : []; return (
             <label className="cv-reports" title="Who this box reports to — any person sitting in its row box">
               <span>reports to</span>
@@ -484,7 +507,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
                 {r && (() => { const hc = cell.headId && byId.get(cell.headId); if (!hc) return <line x1={r.x + r.w} y1={cell.y + 30} x2={cell.x} y2={cell.y + 30} stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" />;
                   const x1 = hc.x + CARD_W, y1 = hc.y + CARD_H / 2, x2 = cell.x, y2 = cell.y + 30, xm = r.x + r.w + 10;
                   return <polyline points={`${x1},${y1} ${xm},${y1} ${xm},${y2} ${x2},${y2}`} fill="none" stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" />; })()}
-                {c && <line x1={cell.x + cell.w / 2} y1={c.y + c.h} x2={cell.x + cell.w / 2} y2={cell.y} stroke={col} strokeWidth="1.5" strokeDasharray="3 4" />}
+                {c && Array.from({ length: cell.span || 1 }, (_, k) => { const cc = byId.get(colOrder[colOrder.indexOf(c.id) + k]); if (!cc) return null; const gg = byId.get(cc.group); return <line key={k} x1={cc.x + cc.w / 2} y1={cc.y + cc.h} x2={cc.x + cc.w / 2} y2={cell.y} stroke={gg?.color || col} strokeWidth="1.5" strokeDasharray="3 4" />; })}
               </g>); })}
           </svg>
           {frames.map((f) => (
