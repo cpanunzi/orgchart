@@ -81,7 +81,17 @@ const area = (r) => r.w * r.h;
 const overlaps = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 // An item belongs to the SMALLEST frame around its centre (so a box laid over a matrix cell
 // doesn't claim the cell's people, and a box inside a box belongs to the inner one).
-const ownerOf = (it, all) => { if (it.role) return null; /* matrix pieces belong to the layout, never to a box laid over them */ const r = rectOf(it); let best = null, ba = Infinity; all.forEach((f) => { if (f.type !== "frame" || f.id === it.id) return; const fr = rectOf(f); if (!inside(r, fr)) return; if (it.type === "frame" && area(fr) <= area(r)) return; const a = (f.role ? 0 : 1e12) + area(fr); /* a matrix cell/row always beats a free box laid over it */ if (a < ba) { ba = a; best = f; } }); return best; };
+const overlapRatio = (a, b) => { const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x), h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y); return w > 0 && h > 0 ? (w * h) / (a.w * a.h) : 0; };
+const ownerOf = (it, all) => {
+  if (it.role) return null; // matrix pieces belong to the layout, never to a box laid over them
+  const r = rectOf(it);
+  // a card counts as in a matrix cell / row box as soon as about a third of it overlaps — no need
+  // to drop it dead centre; the layout then pulls it fully inside
+  if (it.type === "card") { let best = null, br = 0.3; all.forEach((f) => { if (f.type !== "frame" || !f.role) return; const o = overlapRatio(r, rectOf(f)); if (o > br) { br = o; best = f; } }); if (best) return best; }
+  let best = null, ba = Infinity;
+  all.forEach((f) => { if (f.type !== "frame" || f.id === it.id || f.role) return; const fr = rectOf(f); if (!inside(r, fr)) return; if (it.type === "frame" && area(fr) <= area(r)) return; const a = area(fr); if (a < ba) { ba = a; best = f; } });
+  return best;
+};
 const contentsOfFrame = (frameId, all) => { const out = []; const direct = all.filter((i) => ownerOf(i, all)?.id === frameId); direct.forEach((i) => { out.push(i.id); if (i.type === "frame") out.push(...contentsOfFrame(i.id, all)); }); return out; };
 
 // Build a matrix from a team grid: the grid's top teams become groups, their subteams the
