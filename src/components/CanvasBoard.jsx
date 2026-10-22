@@ -39,6 +39,7 @@ const layoutMatrix = (items) => {
   if (!cols.length && !rows.length) return items;
   const cells = items.filter((i) => i.role === "cell");
   const cellsOf = (r, c) => cells.filter((x) => x.row === r.id && x.col === c.id);
+  items.forEach((k) => { if (k.type === "card" && k.in && ownerOf(k, items)?.id !== k.in) delete k.in; });
   const cardsIn = (cell) => { return items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === cell.id).sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0) || a.y - b.y || a.x - b.x); };
   const colX = new Map(); cols.forEach((c, i) => colX.set(c.id, ROWHEAD_W + MGAP + i * (COL_W + MGAP)));
   const top = groups.length ? GROUP_H + 10 : 0;
@@ -50,14 +51,27 @@ const layoutMatrix = (items) => {
     const rowCells = cols.map((c) => { let cell = cellsOf(r, c)[0]; return { c, cell, cards: cell ? cardsIn(cell) : [] }; });
     const h = Math.max(rowHeadH(headCards.length), ...rowCells.map((x) => cellH(x.cards.length)));
     r.x = 0; r.y = y; r.w = ROWHEAD_W; r.h = h;
-    headCards.forEach((k, i) => { k.x = r.x + (ROWHEAD_W - CARD_W) / 2; k.y = r.y + ROWLABEL_H + i * (CARD_H + CGAP); });
-    rowCells.forEach(({ c, cell, cards }) => { if (!cell) return; cell.x = colX.get(c.id); cell.y = y; cell.w = COL_W; cell.h = h; cards.forEach((k, i) => { k.x = cell.x + (COL_W - CARD_W) / 2; k.y = cell.y + CPAD + i * (CARD_H + CGAP); }); });
+    headCards.forEach((k, i) => { k.in = r.id; k.x = r.x + (ROWHEAD_W - CARD_W) / 2; k.y = r.y + ROWLABEL_H + i * (CARD_H + CGAP); });
+    rowCells.forEach(({ c, cell, cards }) => { if (!cell) return; cell.x = colX.get(c.id); cell.y = y; cell.w = COL_W; cell.h = h; cards.forEach((k, i) => { k.in = cell.id; k.x = cell.x + (COL_W - CARD_W) / 2; k.y = cell.y + CPAD + i * (CARD_H + CGAP); }); });
     y += h + MGAP;
   });
   return items;
 };
+// Read the scaffold's order off its positions: rows top-to-bottom, groups left-to-right, verticals
+// left-to-right inside whichever group band they sit under. Dragging a row/vertical/group and
+// dropping it somewhere new is then just "re-read the order and lay out again".
+const orderScaffold = (items) => {
+  const groups = items.filter((i) => i.role === "group").sort((a, b) => a.x - b.x);
+  const cols = items.filter((i) => i.role === "col");
+  cols.forEach((c) => { const cx = c.x + c.w / 2; const g = groups.find((gr) => cx >= gr.x - MGAP / 2 && cx <= gr.x + gr.w + MGAP / 2); if (g) c.group = g.id; else if (!groups.some((gr) => gr.id === c.group)) c.group = groups.length ? (c.x < (groups[0].x) ? groups[0] : groups[groups.length - 1]).id : null; });
+  cols.sort((a, b) => groups.findIndex((g) => g.id === a.group) - groups.findIndex((g) => g.id === b.group) || a.x - b.x);
+  const rows = items.filter((i) => i.role === "row").sort((a, b) => a.y - b.y);
+  const cells = items.filter((i) => i.role === "cell");
+  const rest = items.filter((i) => !i.role);
+  return [...groups, ...cols, ...rows, ...cells, ...rest];
+};
 const ensureCells = (items) => { const rows = items.filter((i) => i.role === "row"), cols = items.filter((i) => i.role === "col"); rows.forEach((r) => cols.forEach((c) => { if (!items.some((x) => x.role === "cell" && x.row === r.id && x.col === c.id)) items.push({ id: rid(), type: "frame", role: "cell", row: r.id, col: c.id, x: 0, y: 0, w: COL_W, h: 76, label: "" }); })); return items; };
-const CARD_W = 184, CARD_H = 56, GRID = 8;
+const CARD_W = 184, CARD_H = 60, GRID = 8;
 const snap = (v) => Math.round(v / GRID) * GRID;
 const V = 1;
 const DEFAULT_LEGEND = {
@@ -87,7 +101,9 @@ const ownerOf = (it, all) => {
   const r = rectOf(it);
   // a card counts as in a matrix cell / row box as soon as about a third of it overlaps — no need
   // to drop it dead centre; the layout then pulls it fully inside
-  if (it.type === "card") { let best = null, br = 0.3; all.forEach((f) => { if (f.type !== "frame" || !f.role) return; const o = overlapRatio(r, rectOf(f)); if (o > br) { br = o; best = f; } }); if (best) return best; }
+  if (it.type === "card") {
+    if (it.in) { const f = all.find((x) => x.id === it.in); if (f && f.role && overlapRatio(r, rectOf(f)) >= 0.3) return f; } // moved together with its box → still its box
+    let best = null, br = 0.3; all.forEach((f) => { if (f.type !== "frame" || !f.role) return; const o = overlapRatio(r, rectOf(f)); if (o > br) { br = o; best = f; } }); if (best) return best; }
   let best = null, ba = Infinity;
   all.forEach((f) => { if (f.type !== "frame" || f.id === it.id || f.role) return; const fr = rectOf(f); if (!inside(r, fr)) return; if (it.type === "frame" && area(fr) <= area(r)) return; const a = area(fr); if (a < ba) { ba = a; best = f; } });
   return best;
@@ -284,7 +300,14 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   }, []);
 
   // ---- actions -------------------------------------------------------------------------------
-  const withContents = (ids) => { const all = docRef.current.items; const out = new Set(ids); ids.forEach((id) => { const it = all.find((i) => i.id === id); if (it?.type === "frame") contentsOf(id, all).forEach((c) => out.add(c)); }); return [...out]; };
+  const withContents = (ids) => { const all = docRef.current.items; const out = new Set(ids);
+    const addFrame = (id) => { out.add(id); contentsOf(id, all).forEach((c) => out.add(c)); };
+    ids.forEach((id) => { const it = all.find((i) => i.id === id); if (!it) return;
+      if (it.type === "frame") addFrame(id);
+      if (it.role === "row") all.filter((i) => i.role === "cell" && i.row === id).forEach((c) => addFrame(c.id));
+      if (it.role === "col") all.filter((i) => i.role === "cell" && i.col === id).forEach((c) => addFrame(c.id));
+      if (it.role === "group") all.filter((i) => i.role === "col" && i.group === id).forEach((c) => { addFrame(c.id); all.filter((x) => x.role === "cell" && x.col === c.id).forEach((x) => addFrame(x.id)); }); });
+    return [...out]; };
   const moveIds = (ids, dx, dy, commit) => { const full = withContents(ids); apply((d) => { d.items.forEach((i) => { if (full.includes(i.id)) { i.x = commit ? snap(i.x + dx) : i.x + dx; i.y = commit ? snap(i.y + dy) : i.y + dy; } }); if (commit) d.items = reflow(d.items); return d; }); };
   const centreOfView = () => { const r = cvRef.current.getBoundingClientRect(); return toWorld(r.left + r.width / 2 - CARD_W / 2, r.top + r.height / 2 - CARD_H / 2); };
   const freeSpot = (p) => { const taken = (x, y) => (docRef.current.items || []).some((i) => i.type === "card" && Math.abs(i.x - x) < 24 && Math.abs(i.y - y) < 24); let { x, y } = p; x = snap(x); y = snap(y); while (taken(x, y)) { x += 24; y += 24; } return { x, y }; };
@@ -307,16 +330,16 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     cards.forEach((c, i) => { c.x = f.x + 16 + (i % cols) * (CARD_W + 12); c.y = f.y + 44 + Math.floor(i / cols) * (CARD_H + 10); });
     const rows = Math.ceil(cards.length / cols); f.h = Math.max(f.h, 44 + rows * (CARD_H + 10) + 8); return d; });
   const hasMatrix = items.some((i) => i.role);
-  const reflow = (its) => (its.some((i) => i.role) ? layoutMatrix(ensureCells(its)) : its);
-  const relayout = () => apply((d) => { d.items = layoutMatrix(ensureCells(d.items)); return d; });
+  const reflow = (its) => (its.some((i) => i.role) ? layoutMatrix(ensureCells(orderScaffold(its))) : its);
+  const relayout = () => apply((d) => { d.items = reflow(d.items); return d; });
   const startMatrix = () => apply((d) => {
     const g = { id: rid(), type: "frame", role: "group", label: "Connect", color: GROUP_COLORS[0], x: 0, y: 0, w: COL_W, h: GROUP_H };
     const c = { id: rid(), type: "frame", role: "col", group: g.id, label: "First vertical", x: 0, y: 0, w: COL_W, h: COLHEAD_H };
     const r = { id: rid(), type: "frame", role: "row", label: "Product", x: 0, y: 0, w: ROWHEAD_W, h: rowHeadH(1) };
     d.items.push(g, c, r); d.items = layoutMatrix(ensureCells(d.items)); return d; });
-  const addGroup = () => { const id = rid(); apply((d) => { const n = d.items.filter((i) => i.role === "group").length; d.items.push({ id, type: "frame", role: "group", label: "", color: GROUP_COLORS[n % GROUP_COLORS.length], x: 0, y: 0, w: COL_W, h: GROUP_H }); d.items.push({ id: rid(), type: "frame", role: "col", group: id, label: "", x: 0, y: 0, w: COL_W, h: COLHEAD_H }); d.items = layoutMatrix(ensureCells(d.items)); return d; }); setEditingLabel(id); };
-  const addCol = (groupId) => { const id = rid(); apply((d) => { const gid = groupId || (d.items.filter((i) => i.role === "group").slice(-1)[0] || {}).id || null; d.items.push({ id, type: "frame", role: "col", group: gid, label: "", x: 0, y: 0, w: COL_W, h: COLHEAD_H }); d.items = layoutMatrix(ensureCells(d.items)); return d; }); setEditingLabel(id); };
-  const addRow = () => { const id = rid(); apply((d) => { d.items.push({ id, type: "frame", role: "row", label: "", x: 0, y: 0, w: ROWHEAD_W, h: rowHeadH(1) }); d.items = layoutMatrix(ensureCells(d.items)); return d; }); setEditingLabel(id); };
+  const addGroup = () => { const id = rid(); apply((d) => { const n = d.items.filter((i) => i.role === "group").length; d.items.push({ id, type: "frame", role: "group", label: "", color: GROUP_COLORS[n % GROUP_COLORS.length], x: 1e9, y: 0, w: COL_W, h: GROUP_H }); d.items.push({ id: rid(), type: "frame", role: "col", group: id, label: "", x: 1e9, y: 0, w: COL_W, h: COLHEAD_H }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
+  const addCol = (groupId) => { const id = rid(); apply((d) => { const gid = groupId || (d.items.filter((i) => i.role === "group").slice(-1)[0] || {}).id || null; const g = d.items.find((i) => i.id === gid); d.items.push({ id, type: "frame", role: "col", group: gid, label: "", x: g ? g.x + g.w - COL_W / 2 : 1e9, y: 0, w: COL_W, h: COLHEAD_H }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
+  const addRow = () => { const id = rid(); apply((d) => { d.items.push({ id, type: "frame", role: "row", label: "", x: 0, y: 1e9, w: ROWHEAD_W, h: rowHeadH(1) }); d.items = reflow(d.items); return d; }); setEditingLabel(id); };
   const removeFrame = (f) => apply((d) => { // a scaffold piece takes its cells (not their people) with it
     const gone = new Set([f.id]);
     if (f.role === "group") d.items.filter((i) => i.role === "col" && i.group === f.id).forEach((c) => gone.add(c.id));
@@ -562,8 +585,8 @@ const cvStyles = `
 .cv-missing { opacity: .55; }
 .cv-avatar { width: 30px; height: 30px; flex: none; border-radius: 50%; display: grid; place-items: center; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 11px; font-weight: 700; color: #fff; background: var(--c); }
 .cv-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
-.cv-text strong { font-family: 'Iowan Old Style', Georgia, serif; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cv-text em { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10.5px; font-style: normal; color: var(--ink-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cv-text strong { font-family: 'Iowan Old Style', Georgia, serif; font-size: 13px; font-weight: 600; line-height: 1.15; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.cv-text em { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10px; font-style: normal; color: var(--ink-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cv-group { border: none; border-radius: 10px; box-shadow: 0 2px 6px -2px rgba(26,22,18,.35); }
 .cv-group .cv-frame-label { color: #fff; text-align: center; left: 12px; right: 12px; top: 12px; font-size: 15.5px; } .cv-group .cv-frame-label-empty { color: rgba(255,255,255,.75); }
 .cv-col { border: 1.5px solid #d6cdb8; border-top: 6px solid var(--g); border-radius: 8px; }
@@ -576,7 +599,7 @@ const cvStyles = `
 .cv-cell:hover .cv-cell-add, .cv-row:hover .cv-cell-add, .cv-cell.cv-sel .cv-cell-add { opacity: 1; } .cv-cell-add:hover { background: var(--ink); color: var(--paper); border-style: solid; }
 .cv-autolinks { z-index: 0; }
 .cv-card.cv-lead { border-width: 2px; border-left-width: 6px; box-shadow: 0 2px 4px rgba(26,22,18,.12), 0 8px 18px -10px rgba(26,22,18,.35); }
-.cv-card.cv-lead strong { font-size: 14px; }
+.cv-card.cv-lead strong { font-size: 13.5px; }
 .cv-reports { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px 0 10px; border: 1px solid var(--line); border-radius: 9px; background: #fffdf7; font-family: 'Iowan Old Style', Georgia, serif; font-size: 12px; font-style: italic; color: var(--ink-soft); }
 .cv-reports select { font: inherit; font-style: normal; border: none; background: transparent; color: var(--ink); outline: none; max-width: 180px; }
 .cv-marquee { position: absolute; border: 1px dashed var(--ink); background: rgba(26,22,18,.05); pointer-events: none; }
