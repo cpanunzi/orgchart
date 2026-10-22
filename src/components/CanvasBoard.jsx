@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { ArrowLeft, Plus, X, RotateCcw, Square, UserPlus, Minus, Maximize2, Link2, Trash2, Edit2, Crown, LayoutGrid, Palette, Users } from "lucide-react";
+import { ArrowLeft, Plus, X, RotateCcw, Square, UserPlus, Minus, Maximize2, Link2, Trash2, Edit2, Crown, LayoutGrid, Palette, Flag } from "lucide-react";
 import { supabase } from "../lib/supabase.js";
 import { sharedStyles } from "./styles.js";
 import { PeoplePicker, place, buildSource, initials, mxStyles } from "./MatrixBoard.jsx";
@@ -507,9 +507,10 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
               </g>); })}
           </svg>
           {items.filter((i) => i.type === "card").map((c) => { const p = person(c.ref); const cat = catOf(c); const col = colorOf(c); const nm = p?.name || c.name || "Open role"; const missing = c.ref && source.ready && !p; return (
-            <div key={c.id} data-id={c.id} className={`cv-card cv-cat-${cat} ${c.lead ? "cv-lead" : ""} ${sel.has(c.id) ? "cv-sel" : ""} ${linkFrom === c.id ? "cv-link-src" : ""} ${missing ? "cv-missing" : ""}`} style={{ left: c.x, top: c.y, width: CARD_W, height: CARD_H, "--c": col }} onPointerDown={(e) => onItemDown(e, c)} title={p ? `${p.title || ""}${p.managerName ? ` · reports to ${p.managerName}` : ""}` : ""}>
+            <div key={c.id} data-id={c.id} className={`cv-card cv-cat-${cat} ${c.lead ? "cv-lead" : ""} ${c.letGo ? "cv-letgo" : ""} ${sel.has(c.id) ? "cv-sel" : ""} ${linkFrom === c.id ? "cv-link-src" : ""} ${missing ? "cv-missing" : ""}`} style={{ left: c.x, top: c.y, width: CARD_W, height: CARD_H, "--c": col }} onPointerDown={(e) => onItemDown(e, c)} title={p ? `${p.title || ""}${p.managerName ? ` · reports to ${p.managerName}` : ""}` : ""}>
               <span className="cv-avatar">{cat === "hire" && !c.name ? "?" : initials(nm)}</span>
               <span className="cv-text"><strong>{nm}</strong><em>{c.title || p?.title || (cat === "hire" ? "to be hired" : "")}</em></span>
+              {c.letGo && <span className="cv-flag" title="Flagged: to let go"><Flag size={10} strokeWidth={2.2} /> let go</span>}
             </div>); })}
           {marquee && <div className="cv-marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} />}
         </div>
@@ -522,6 +523,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
                 <label className="cv-swatch" style={{ background: L.color }}><input type="color" value={L.color} onChange={(e) => setLegend(k, { color: e.target.value })} /></label>
                 <input className="cv-legend-label" value={L.label} onChange={(e) => setLegend(k, { label: e.target.value })} />
               </div>); })}
+            <div className="cv-legend-row cv-legend-static"><span className="cv-flag"><Flag size={10} strokeWidth={2.2} /> let go</span><span className="cv-legend-text">flagged to let go (card menu)</span></div>
             {!doc.headRef && <div className="cv-legend-hint">Set the org head (top left) and levels colour themselves.</div>}
           </div>
         )}
@@ -545,6 +547,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
             {["auto", ...CAT_ORDER].map((k) => <button key={k} className={`cv-cat-btn ${(c.cat || "auto") === k ? "cv-cat-on" : ""}`} style={{ "--c": k === "auto" ? "#8a7d6c" : legend[k].color }} onClick={() => update(c.id, { cat: k })} title={k === "auto" ? "Automatic from the org chart" : legend[k].label}>{k === "auto" ? "auto" : legend[k].label}</button>)}
           </div>
           <div className="cm-actions">
+            <button className={`tb ${c.letGo ? "tb-flag-on" : ""}`} onClick={() => update(c.id, { letGo: !c.letGo })} title="Flag this person as to let go"><Flag size={13} /> {c.letGo ? "To let go" : "Let go?"}</button>
             <button className={`tb ${c.lead ? "tb-primary" : ""}`} onClick={() => update(c.id, { lead: !c.lead })} title="The lead sits first in its box, with a strong border"><Crown size={13} /> {c.lead ? "Lead" : "Make lead"}</button>
             <button className="tb" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "linkTo", from: c.id, rect: { left: r.left, top: r.top, bottom: r.bottom } }); }}><Link2 size={13} /> Dotted line to…</button>
             <button className="tb tb-danger" onClick={() => { apply((d) => { d.items = d.items.filter((i) => i.id !== c.id); d.items.forEach((i) => { if (i.headId === c.id) delete i.headId; }); d.links = d.links.filter((l) => l.from !== c.id && l.to !== c.id); d.items = reflow(d.items); return d; }); setMenu(null); setSel(new Set()); }}><Trash2 size={13} /> Remove</button>
@@ -602,6 +605,10 @@ const cvStyles = `
 .cv-card.cv-lead strong { font-size: 13.5px; }
 .cv-reports { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px 0 10px; border: 1px solid var(--line); border-radius: 9px; background: #fffdf7; font-family: 'Iowan Old Style', Georgia, serif; font-size: 12px; font-style: italic; color: var(--ink-soft); }
 .cv-reports select { font: inherit; font-style: normal; border: none; background: transparent; color: var(--ink); outline: none; max-width: 180px; }
+.cv-flag { position: absolute; right: -6px; top: -9px; display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 999px; background: #b8442a; color: #fff; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; box-shadow: 0 1px 3px rgba(26,22,18,.25); }
+.cv-letgo { border-color: #b8442a !important; background: repeating-linear-gradient(135deg, #fffdf8 0 6px, #fbeae5 6px 12px); } .cv-letgo .cv-text strong { text-decoration: line-through; text-decoration-color: #b8442a; text-decoration-thickness: 1.5px; }
+.cv-legend-static { gap: 10px; } .cv-legend-static .cv-flag { position: static; } .cv-legend-text { font-size: 12.5px; color: var(--ink-soft); }
+.tb-flag-on { background: #b8442a; color: #fff; border-color: #b8442a; }
 .cv-marquee { position: absolute; border: 1px dashed var(--ink); background: rgba(26,22,18,.05); pointer-events: none; }
 .cv-empty { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); max-width: 520px; text-align: center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 15px; line-height: 1.6; color: var(--ink-faint); pointer-events: none; }
 .cv-legend { position: absolute; right: 18px; bottom: 18px; width: 290px; background: rgba(255,253,248,.96); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px 12px; font-family: 'Iowan Old Style', Georgia, serif; }
