@@ -433,6 +433,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
       d.items = d.items.filter((i) => !others.includes(i.id)); d.items = reflow(d.items); return d; }); setSel(new Set([first.id])); };
   const transpose = () => apply((d) => { d.items = reflow(transposeItems(d.items)); return d; });
   const splitCell = (cell) => apply((d) => { const c = d.items.find((i) => i.id === cell.id); if (c) { delete c.span; delete c.vspan; } d.items = reflow(d.items); return d; });
+  const shrinkCell = (cell) => apply((d) => { const c = d.items.find((i) => i.id === cell.id); if (!c) return d; if (c.vspan > 1) { c.vspan -= 1; if (c.vspan === 1) delete c.vspan; } else if (c.span > 1) { c.span -= 1; if (c.span === 1) delete c.span; } d.items = reflow(d.items); return d; }); // peel the last row / column off a merge
   const setLegend = (cat, patch) => apply((d) => { d.legend = { ...DEFAULT_LEGEND, ...(d.legend || {}) }; d.legend[cat] = { ...d.legend[cat], ...patch }; return d; });
 
   const onPick = (pick) => {
@@ -542,7 +543,10 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
           </>) : <button className="tb" onClick={startMatrix} title="Start a matrix: verticals across, functions down, people where they meet"><LayoutGrid size={14} strokeWidth={1.7} /> Start a matrix</button>}
           <button className={`tb ${linkFrom ? "tb-primary" : ""}`} disabled={!linkFrom && !(sel.size === 1 && byId.get([...sel][0])?.type === "card")} onClick={() => setLinkFrom(linkFrom ? null : [...sel][0])} title="Select a person, then click the person they have a dotted line to"><Link2 size={14} strokeWidth={1.7} /> {linkFrom ? "Click the other person…" : "Dotted line"}</button>
           {mergeable && <button className="tb" onClick={mergeCells} title="Merge these cells into one across the verticals"><LayoutGrid size={14} strokeWidth={1.7} /> Merge {selCells.length}</button>}
-          {selFrame?.role === "cell" && (selFrame.span > 1 || selFrame.vspan > 1) && <button className="tb" onClick={() => splitCell(selFrame)} title="Split this merged cell back into one per vertical"><LayoutGrid size={14} strokeWidth={1.7} /> Split</button>}
+          {selFrame?.role === "cell" && (selFrame.span > 1 || selFrame.vspan > 1) && <>
+            <button className="tb" onClick={() => shrinkCell(selFrame)} title={selFrame.vspan > 1 ? "Take the bottom row out of this merge" : "Take the right-hand column out of this merge"}><LayoutGrid size={14} strokeWidth={1.7} /> Unmerge last</button>
+            <button className="tb" onClick={() => splitCell(selFrame)} title="Split this merged cell back into single cells"><LayoutGrid size={14} strokeWidth={1.7} /> Split all</button>
+          </>}
           {selFrame?.role === "cell" && (() => { const r = byId.get(selFrame.row); const heads = r ? items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === r.id) : []; return (
             <label className="cv-reports" title="Who this box reports to — any person sitting in its row box">
               <span>reports to</span>
