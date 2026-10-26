@@ -396,6 +396,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const shownRef = useRef(null);
   const fit = () => { const its = shownRef.current || docRef.current?.items || []; if (!its.length || !cvRef.current) return; const rs = its.map(rectOf); const x0 = Math.min(...rs.map((r) => r.x)) - 40, y0 = Math.min(...rs.map((r) => r.y)) - 40, x1 = Math.max(...rs.map((r) => r.x + r.w)) + 40, y1 = Math.max(...rs.map((r) => r.y + r.h)) + 40; const r = cvRef.current.getBoundingClientRect(); const z = Math.min(1.25, r.width / (x1 - x0), r.height / (y1 - y0)); setView({ z, x: (r.width - (x1 - x0) * z) / 2 - x0 * z, y: (r.height - (y1 - y0) * z) / 2 - y0 * z }); };
   const canvasReady = !!doc && !tooNew && !(present && pmode === "slide");
+  useEffect(() => { document.documentElement.classList.add("cv-lock"); document.body.classList.add("cv-lock"); window.scrollTo(0, 0); return () => { document.documentElement.classList.remove("cv-lock"); document.body.classList.remove("cv-lock"); }; }, []);
   useEffect(() => {
     const cv = cvRef.current; if (!cv) return;
     const onWheel = (e) => { e.preventDefault(); if (e.ctrlKey || e.metaKey) zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01)); else setView((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY })); };
@@ -776,7 +777,8 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
 }
 
 const cvStyles = `
-.cv-root { padding-bottom: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.cv-root { padding-bottom: 0; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }
+.cv-lock { overflow: hidden !important; height: 100%; }
 .cv-top { flex: none; }
 .cv-tools { display: flex; gap: 6px; align-items: center; }
 .tb-off { opacity: .5; }
