@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { ArrowLeft, Plus, X, RotateCcw, Square, UserPlus, Minus, Maximize2, Link2, Trash2, Edit2, Crown, LayoutGrid, Palette, Flag, Copy, Pin, PinOff, ArrowLeftRight } from "lucide-react";
+import { ArrowLeft, Plus, X, RotateCcw, Square, UserPlus, Minus, Maximize2, Link2, Trash2, Edit2, Crown, LayoutGrid, Palette, Flag, Copy, Pin, PinOff, ArrowLeftRight, Presentation, ArrowLeft as BackIcon } from "lucide-react";
 import { supabase } from "../lib/supabase.js";
 import { sharedStyles } from "./styles.js";
 import { PeoplePicker, place, buildSource, initials, mxStyles } from "./MatrixBoard.jsx";
@@ -101,6 +101,26 @@ const orderScaffold = (items, moved = new Set()) => {
   const rest = items.filter((i) => !i.role);
   return [...groups, ...rgroups, ...cols, ...rows, ...cells, ...rest];
 };
+// Present mode: a read-only picture of the same board. "overview" = structure only (no names, no
+// cards, cells shrunk to a count); "focus" = one department's column/row/band with its people;
+// "extended" = everything. Let-go flags never show. Built from a clone, so nothing is saved.
+const presentItems = (items, mode, focusId) => {
+  const counts = new Map(); items.forEach((i) => { if (i.type === "card" && i.in) counts.set(i.in, (counts.get(i.in) || 0) + 1); });
+  let keep = () => true;
+  if (mode === "overview") keep = () => false;
+  else if (mode === "focus" && focusId) {
+    const f = items.find((i) => i.id === focusId); const colsOfGroup = f?.role === "group" ? new Set(items.filter((i) => i.role === "col" && i.group === f.id).map((c) => c.id)) : null;
+    const rowsOfGroup = f?.role === "rgroup" ? new Set(items.filter((i) => i.role === "row" && i.group === f.id).map((r) => r.id)) : null;
+    const boxes = new Set([focusId]);
+    items.forEach((i) => { if (i.role !== "cell") return; if ((f?.role === "col" && i.col === f.id) || (f?.role === "row" && i.row === f.id) || (colsOfGroup && colsOfGroup.has(i.col)) || (rowsOfGroup && rowsOfGroup.has(i.row))) boxes.add(i.id); });
+    if (colsOfGroup) colsOfGroup.forEach((id) => boxes.add(id)); if (rowsOfGroup) rowsOfGroup.forEach((id) => boxes.add(id));
+    keep = (c) => boxes.has(c.in);
+  }
+  const out = clone(items.filter((i) => i.type === "card" ? (i.in && keep(i)) : !!i.role)); // scaffold + the people in it; free boxes and loose cards are working notes
+  out.forEach((i) => { if (i.role === "cell") i.count = counts.get(i.id) || 0; if (i.type === "card") delete i.letGo; });
+  return layoutMatrix(ensureCells(orderScaffold(out)));
+};
+
 // functions ↔ verticals: bands follow, cells keep their people (merged cells are split)
 const transposeItems = (items) => {
   const swap = { group: "rgroup", rgroup: "group", col: "row", row: "col" };
@@ -219,9 +239,15 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const [marquee, setMarquee] = useState(null);
   const [showLegend, setShowLegend] = useState(true);
   const [spaceDown, setSpaceDown] = useState(false);
+  // present mode (?present=1): read-only, shareable; overview → click a department → extended
+  const [present, setPresentState] = useState(() => new URLSearchParams(window.location.search).get("present") === "1");
+  const [pmode, setPmode] = useState("overview");  // "overview" | "focus" | "extended"
+  const [focusId, setFocusId] = useState(null);
+  const setPresent = (on) => { const url = new URL(window.location.href); if (on) url.searchParams.set("present", "1"); else url.searchParams.delete("present"); window.history.replaceState(null, "", url.toString()); setPresentState(on); setPmode("overview"); setFocusId(null); setSel(new Set()); setMenu(null); setPicker(null); setTimeout(fit, 60); };
   const [freeze, setFreezeState] = useState(() => { try { return localStorage.getItem(`atelier-canvas-freeze:${chartId}`) !== "off"; } catch { return true; } });
   const setFreeze = (v) => { setFreezeState(v); try { localStorage.setItem(`atelier-canvas-freeze:${chartId}`, v ? "on" : "off"); } catch { /* ignore */ } };
   const [dragIds, setDragIds] = useState(() => new Set());
+  const presentRef = useRef(false); presentRef.current = present;
   const PIN_PAD = 10;
   const pinInfo = () => { const v = viewRef.current; const on = freeze && (docRef.current?.items || []).some((i) => i.role); return { on, pinX: on ? Math.max(v.x, PIN_PAD) : v.x, pinY: on ? Math.max(v.y, PIN_PAD) : v.y }; };
   const pinLayerOf = (it, all) => { if (it.type === "frame") return it.role === "group" || it.role === "col" ? "top" : it.role === "row" || it.role === "rgroup" ? "left" : "main"; const o = it.in && all.find((x) => x.id === it.in); return o && (o.role === "row" || o.role === "rgroup") ? "left" : o && (o.role === "col" || o.role === "group") ? "top" : "main"; }; // cards being dragged render in the main layer so they don't jump between pinned layers
@@ -325,7 +351,8 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const toWorld = (sx, sy) => { const r = cvRef.current.getBoundingClientRect(); const v = viewRef.current; return { x: (sx - r.left - v.x) / v.z, y: (sy - r.top - v.y) / v.z }; };
   const zoomAt = (sx, sy, factor) => setView((v) => { const z = Math.min(2.5, Math.max(0.2, v.z * factor)); const r = cvRef.current.getBoundingClientRect(); const px = sx - r.left, py = sy - r.top; const wx = (px - v.x) / v.z, wy = (py - v.y) / v.z; return { z, x: px - wx * z, y: py - wy * z }; });
   const zoomBy = (f) => { const r = cvRef.current.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, f); };
-  const fit = () => { const its = docRef.current?.items || []; if (!its.length || !cvRef.current) return; const rs = its.map(rectOf); const x0 = Math.min(...rs.map((r) => r.x)) - 40, y0 = Math.min(...rs.map((r) => r.y)) - 40, x1 = Math.max(...rs.map((r) => r.x + r.w)) + 40, y1 = Math.max(...rs.map((r) => r.y + r.h)) + 40; const r = cvRef.current.getBoundingClientRect(); const z = Math.min(1.25, r.width / (x1 - x0), r.height / (y1 - y0)); setView({ z, x: (r.width - (x1 - x0) * z) / 2 - x0 * z, y: (r.height - (y1 - y0) * z) / 2 - y0 * z }); };
+  const shownRef = useRef(null);
+  const fit = () => { const its = shownRef.current || docRef.current?.items || []; if (!its.length || !cvRef.current) return; const rs = its.map(rectOf); const x0 = Math.min(...rs.map((r) => r.x)) - 40, y0 = Math.min(...rs.map((r) => r.y)) - 40, x1 = Math.max(...rs.map((r) => r.x + r.w)) + 40, y1 = Math.max(...rs.map((r) => r.y + r.h)) + 40; const r = cvRef.current.getBoundingClientRect(); const z = Math.min(1.25, r.width / (x1 - x0), r.height / (y1 - y0)); setView({ z, x: (r.width - (x1 - x0) * z) / 2 - x0 * z, y: (r.height - (y1 - y0) * z) / 2 - y0 * z }); };
   const canvasReady = !!doc && !tooNew;
   useEffect(() => {
     const cv = cvRef.current; if (!cv) return;
@@ -335,6 +362,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasReady]);
   useEffect(() => { if (canvasReady && (docRef.current?.items || []).length) setTimeout(fit, 50); }, [canvasReady]); // eslint-disable-line
+  useEffect(() => { if (present) setTimeout(fit, 60); }, [present, pmode, focusId]); // eslint-disable-line
 
   // ---- keyboard -----------------------------------------------------------------------------
   useEffect(() => {
@@ -342,6 +370,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     const down = (e) => {
       if (e.key === "Escape") { setPicker(null); setMenu(null); setLinkFrom(null); setSel(new Set()); setSelLink(null); }
       if (typing(e)) return;
+      if (presentRef.current && e.key !== "Escape" && !((e.metaKey || e.ctrlKey) && ["0", "=", "+", "-"].includes(e.key))) return; // read-only
       if (e.code === "Space") { setSpaceDown(true); e.preventDefault(); }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
       if ((e.metaKey || e.ctrlKey) && e.key === "0") { e.preventDefault(); fit(); }
@@ -448,6 +477,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   // ---- pointer handling on the canvas ----------------------------------------------------------
   const onItemDown = (e, it) => {
     if (e.button !== 0) return;
+    if (present) { e.stopPropagation(); if (it.type === "frame" && ["col", "row", "group", "rgroup"].includes(it.role)) { setFocusId(it.id); setPmode("focus"); } return; }
     e.stopPropagation(); setMenu(null);
     if (linkFromRef.current && it.type === "card") { if (linkFromRef.current !== it.id) addLink(linkFromRef.current, it.id); setLinkFrom(null); return; }
     let next = new Set(selRef.current);
@@ -461,7 +491,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   };
   const onResizeDown = (e, it) => { e.stopPropagation(); if (e.button !== 0) return; const start = toWorld(e.clientX, e.clientY); dragRef.current = { kind: "resize", id: it.id, start, w: it.w, h: it.h }; setSel(new Set([it.id])); };
   const onCanvasDown = (e) => {
-    if (e.button === 1 || spaceDown || e.button === 0 && e.altKey) { dragRef.current = { kind: "pan", sx: e.clientX, sy: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y }; return; }
+    if (e.button === 1 || spaceDown || e.button === 0 && e.altKey || present) { dragRef.current = { kind: "pan", sx: e.clientX, sy: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y }; return; }
     if (e.button !== 0) return;
     setMenu(null); setLinkFrom(null); setSelLink(null); if (!e.shiftKey) setSel(new Set());
     const start = toWorld(e.clientX, e.clientY); dragRef.current = { kind: "marquee", start, add: e.shiftKey ? new Set(selRef.current) : new Set() }; setMarquee({ x: start.x, y: start.y, w: 0, h: 0 });
@@ -506,12 +536,14 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   if (tooNew) return (<div className="org-root"><style>{sharedStyles}</style><button className="tb" onClick={onBack}>← Back</button><p style={{ marginTop: 24, maxWidth: 560, lineHeight: 1.6 }}>This canvas was saved by a newer version of the app. <strong>Reload the page</strong> to get the latest version.</p><button className="tb tb-primary" onClick={() => window.location.reload()}>Reload</button></div>);
   if (!doc) return <div style={{ padding: 60, fontFamily: "Iowan Old Style, Georgia, serif", color: "#8a7d6c" }}>Loading…</div>;
 
-  const linkGeom = (l) => { const a = byId.get(l.from), b = byId.get(l.to); if (!a || !b) return null; const ra = rectOf(a), rb = rectOf(b); const ca = { x: ra.x + ra.w / 2, y: ra.y + ra.h / 2 }, cb = { x: rb.x + rb.w / 2, y: rb.y + rb.h / 2 };
+  const vItems = present ? presentItems(items, pmode, focusId) : items; shownRef.current = vItems;
+  const vFrames = vItems.filter((i) => i.type === "frame"); const vById = new Map(vItems.map((i) => [i.id, i]));
+  const linkGeom = (l) => { const a = vById.get(l.from), b = vById.get(l.to); if (!a || !b) return null; const ra = rectOf(a), rb = rectOf(b); const ca = { x: ra.x + ra.w / 2, y: ra.y + ra.h / 2 }, cb = { x: rb.x + rb.w / 2, y: rb.y + rb.h / 2 };
     const clip = (r, c, o) => { const dx = o.x - c.x, dy = o.y - c.y; if (!dx && !dy) return c; const sx = (r.w / 2) / Math.abs(dx || 1e-9), sy = (r.h / 2) / Math.abs(dy || 1e-9); const s = Math.min(sx, sy); return { x: c.x + dx * s, y: c.y + dy * s }; };
     return { a: clip(ra, ca, cb), b: clip(rb, cb, ca) }; };
   const headP = person(doc.headRef);
-  const menuItem = menu && byId.get(menu.id);
-  const selFrame = sel.size === 1 && byId.get([...sel][0])?.type === "frame" ? byId.get([...sel][0]) : null;
+  const menuItem = menu && vById.get(menu.id);
+  const selFrame = sel.size === 1 && vById.get([...sel][0])?.type === "frame" ? vById.get([...sel][0]) : null;
 
   return (
     <div className="org-root cv-root">
@@ -523,11 +555,21 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
           {editingName ? <input autoFocus className="mx-title-input" defaultValue={name} onBlur={(e) => saveName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveName(e.target.value); if (e.key === "Escape") setEditingName(false); }} />
             : <h1 className="mx-title" onClick={() => setEditingName(true)} title="Click to rename">{name}<Edit2 size={13} strokeWidth={1.8} className="mx-pen" /></h1>}
         </div>
-        <button className="mx-lead" onClick={(e) => openPicker(e, { mode: "head" })} title="Levels are coloured by depth under this person">
+        <button className="mx-lead" disabled={present} onClick={(e) => !present && openPicker(e, { mode: "head" })} title="Levels are coloured by depth under this person">
           <Crown size={14} strokeWidth={1.7} />
           {headP ? <span><strong>{headP.name}</strong><em>org head · levels counted from here</em></span> : <span><strong>Set the org head</strong><em>to colour people by level</em></span>}
         </button>
         <div className="mx-spacer" />
+        {present ? (
+          <div className="cv-tools">
+            {pmode === "focus" && <button className="tb" onClick={() => { setPmode("overview"); setFocusId(null); }}><BackIcon size={14} strokeWidth={1.8} /> Overview</button>}
+            <div className="cv-seg">
+              <button className={pmode === "overview" ? "on" : ""} onClick={() => { setPmode("overview"); setFocusId(null); }}>Overview</button>
+              <button className={pmode === "extended" ? "on" : ""} onClick={() => { setPmode("extended"); setFocusId(null); }}>Extended</button>
+            </div>
+            <span className="cv-hint-inline">{pmode === "overview" ? "click a department to open it" : pmode === "focus" ? (vById.get(focusId)?.label || "") : "everyone, every box"}</span>
+          </div>
+        ) : (
         <div className="cv-tools">
           <button className="tb" onClick={(e) => openPicker(e, { mode: "add" })} title="Add people from the functional org"><UserPlus size={14} strokeWidth={1.7} /> Person</button>
           <button className="tb" onClick={addHire} title="Add a role to be hired"><Plus size={14} strokeWidth={1.7} /> To hire</button>
@@ -541,13 +583,13 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
             <button className="tb" onClick={relayout} title="Snap the matrix back into a clean grid"><LayoutGrid size={14} strokeWidth={1.7} /> Re-layout</button>
             <button className="tb" onClick={() => { if (window.confirm("Swap rows and columns?")) transpose(); }} title="Swap rows ↔ columns"><ArrowLeftRight size={14} strokeWidth={1.7} /> Swap</button>
           </>) : <button className="tb" onClick={startMatrix} title="Start a matrix: verticals across, functions down, people where they meet"><LayoutGrid size={14} strokeWidth={1.7} /> Start a matrix</button>}
-          <button className={`tb ${linkFrom ? "tb-primary" : ""}`} disabled={!linkFrom && !(sel.size === 1 && byId.get([...sel][0])?.type === "card")} onClick={() => setLinkFrom(linkFrom ? null : [...sel][0])} title="Select a person, then click the person they have a dotted line to"><Link2 size={14} strokeWidth={1.7} /> {linkFrom ? "Click the other person…" : "Dotted line"}</button>
+          <button className={`tb ${linkFrom ? "tb-primary" : ""}`} disabled={!linkFrom && !(sel.size === 1 && vById.get([...sel][0])?.type === "card")} onClick={() => setLinkFrom(linkFrom ? null : [...sel][0])} title="Select a person, then click the person they have a dotted line to"><Link2 size={14} strokeWidth={1.7} /> {linkFrom ? "Click the other person…" : "Dotted line"}</button>
           {mergeable && <button className="tb" onClick={mergeCells} title="Merge these cells into one across the verticals"><LayoutGrid size={14} strokeWidth={1.7} /> Merge {selCells.length}</button>}
           {selFrame?.role === "cell" && (selFrame.span > 1 || selFrame.vspan > 1) && <>
             <button className="tb" onClick={() => shrinkCell(selFrame)} title={selFrame.vspan > 1 ? "Take the bottom row out of this merge" : "Take the right-hand column out of this merge"}><LayoutGrid size={14} strokeWidth={1.7} /> Unmerge last</button>
             <button className="tb" onClick={() => splitCell(selFrame)} title="Split this merged cell back into single cells"><LayoutGrid size={14} strokeWidth={1.7} /> Split all</button>
           </>}
-          {selFrame?.role === "cell" && (() => { const r = byId.get(selFrame.row); const heads = r ? items.filter((i) => i.type === "card" && ownerOf(i, items)?.id === r.id) : []; return (
+          {selFrame?.role === "cell" && (() => { const r = vById.get(selFrame.row); const heads = r ? vItems.filter((i) => i.type === "card" && ownerOf(i, vItems)?.id === r.id) : []; return (
             <label className="cv-reports" title="Who this box reports to — any person sitting in its row box">
               <span>reports to</span>
               <select value={selFrame.headId || ""} onChange={(e) => update(selFrame.id, { headId: e.target.value || null })}>
@@ -557,17 +599,18 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
             </label>); })()}
           {selFrame && !selFrame.role && <button className="tb" onClick={() => tidy(selFrame.id)} title="Arrange the people in this box in a neat grid"><LayoutGrid size={14} strokeWidth={1.7} /> Tidy box</button>}
           {sel.size > 0 && <button className="tb tb-danger" onClick={removeSel} title="Remove selected (⌫)"><Trash2 size={14} strokeWidth={1.7} /></button>}
-        </div>
+        </div>)}
         <div className="mx-zoom">
           <button onClick={() => zoomBy(1 / 1.15)} aria-label="Zoom out"><Minus size={14} strokeWidth={1.9} /></button>
           <button className="mx-zoom-pct" onClick={() => setView((v) => ({ ...v, z: 1 }))}>{Math.round(view.z * 100)}%</button>
           <button onClick={() => zoomBy(1.15)} aria-label="Zoom in"><Plus size={14} strokeWidth={1.9} /></button>
           <button className="mx-zoom-fit" onClick={fit} title="Fit everything (⌘0)"><Maximize2 size={13} strokeWidth={1.8} /> Fit</button>
         </div>
-        <button className="tb" onClick={undo} disabled={!history.length} title="Undo (⌘Z)"><RotateCcw size={14} strokeWidth={1.5} /></button>
+        {!present && <button className="tb" onClick={undo} disabled={!history.length} title="Undo (⌘Z)"><RotateCcw size={14} strokeWidth={1.5} /></button>}
+        {hasMatrix && <button className={`tb ${present ? "tb-primary" : ""}`} onClick={() => setPresent(!present)} title={present ? "Back to editing" : "Present: read-only overview → department → extended view (the URL becomes shareable)"}><Presentation size={14} strokeWidth={1.7} /> {present ? "Exit" : "Present"}</button>}
         {hasMatrix && <button className={`tb ${freeze ? "" : "tb-off"}`} onClick={() => setFreeze(!freeze)} title={freeze ? "Headers are frozen while you scroll — click to unfreeze" : "Freeze the top headers and left-hand heads while you scroll"}>{freeze ? <Pin size={14} strokeWidth={1.7} /> : <PinOff size={14} strokeWidth={1.7} />}</button>}
         <button className={`tb ${showLegend ? "" : "tb-off"}`} onClick={() => setShowLegend((s) => !s)} title="Legend"><Palette size={14} strokeWidth={1.6} /></button>
-        <div className={`mx-save mx-save-${saveStatus}`}>{saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save error" : "Saved"}</div>
+        {!present && <div className={`mx-save mx-save-${saveStatus}`}>{saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save error" : "Saved"}</div>}
       </header>
       {rescue && (
         <div className="mx-rescue">
@@ -583,16 +626,17 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
         // left edge. Everything else scrolls underneath.
         const PAD = PIN_PAD; const pinned = freeze && hasMatrix;
         const pinY = pinned ? Math.max(view.y, PAD) : view.y, pinX = pinned ? Math.max(view.x, PAD) : view.x;
-        const hasGroups = items.some((i) => i.role === "group"), hasRG = items.some((i) => i.role === "rgroup");
-        const tops = frames.filter((f) => f.role === "group" || f.role === "col"), lefts = frames.filter((f) => f.role === "row" || f.role === "rgroup");
+        const hasGroups = vItems.some((i) => i.role === "group"), hasRG = vItems.some((i) => i.role === "rgroup");
+        const tops = vFrames.filter((f) => f.role === "group" || f.role === "col"), lefts = vFrames.filter((f) => f.role === "row" || f.role === "rgroup");
         const headerBottom = tops.length ? Math.max(...tops.map((f) => f.y + f.h)) : 0, leftRight = lefts.length ? Math.max(...lefts.map((f) => f.x + f.w)) : 0; void hasGroups; void hasRG;
-        const layerOf = (it) => (!pinned || dragIds.has(it.id)) ? "main" : pinLayerOf(it, items);
+        const layerOf = (it) => (!pinned || dragIds.has(it.id)) ? "main" : pinLayerOf(it, vItems);
         const frameEl = (f) => (
-            <div key={f.id} data-id={f.id} className={`cv-frame ${f.role ? `cv-${f.role}` : ""} ${sel.has(f.id) ? "cv-sel" : ""}`} style={{ left: f.x, top: f.y, width: f.w, height: f.h, background: f.role === "group" ? f.color : f.role === "col" ? "#fffdf8" : f.role ? undefined : (f.tint || TINTS[0]), "--g": f.role === "col" ? (byId.get(f.group)?.color || "#8a7d6c") : f.color }}
-              onPointerDown={(e) => onItemDown(e, f)} onDoubleClick={(e) => { e.stopPropagation(); if (f.role !== "cell") setEditingLabel(f.id); }}>
-              {f.role === "cell" && <button className="cv-cell-add" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { const rr = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "cell", frameId: f.id, rect: { left: rr.left, top: rr.top, bottom: rr.bottom } }); }} title="Add people here"><Plus size={12} strokeWidth={2} /></button>}
-              {(f.role === "rgroup" || f.role === "row" || f.role === "col" || f.role === "group") && <button className="cv-cell-add" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { const rr = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "cell", frameId: f.id, rect: { left: rr.left, top: rr.top, bottom: rr.bottom } }); }} title="Add people here"><Plus size={12} strokeWidth={2} /></button>}
-              {(f.role === "group" || f.role === "rgroup") && sel.has(f.id) && <div className="cv-tint-row" onPointerDown={(e) => e.stopPropagation()}>{GROUP_COLORS.map((t) => <button key={t} className={`cv-tint ${f.color === t ? "cv-tint-on" : ""}`} style={{ background: t }} onClick={() => update(f.id, { color: t })} />)}</div>}
+            <div key={f.id} data-id={f.id} className={`cv-frame ${f.role ? `cv-${f.role}` : ""} ${sel.has(f.id) ? "cv-sel" : ""} ${present && ["col", "row", "group", "rgroup"].includes(f.role) ? "cv-clickable" : ""} ${present && focusId === f.id ? "cv-focus" : ""} ${present && f.role === "cell" && f.count === 0 ? "cv-cell-none" : ""}`} style={{ left: f.x, top: f.y, width: f.w, height: f.h, background: f.role === "group" ? f.color : f.role === "col" ? "#fffdf8" : f.role ? undefined : (f.tint || TINTS[0]), "--g": f.role === "col" ? (vById.get(f.group)?.color || "#8a7d6c") : f.color }}
+              onPointerDown={(e) => onItemDown(e, f)} onDoubleClick={(e) => { e.stopPropagation(); if (!present && f.role !== "cell") setEditingLabel(f.id); }}>
+              {present && f.role === "cell" && pmode !== "extended" && !vItems.some((i) => i.type === "card" && i.in === f.id) && f.count > 0 && <span className="cv-count" title={`${f.count} ${f.count === 1 ? "person" : "people"}`}>{f.count}</span>}
+              {!present && f.role === "cell" && <button className="cv-cell-add" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { const rr = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "cell", frameId: f.id, rect: { left: rr.left, top: rr.top, bottom: rr.bottom } }); }} title="Add people here"><Plus size={12} strokeWidth={2} /></button>}
+              {!present && (f.role === "rgroup" || f.role === "row" || f.role === "col" || f.role === "group") && <button className="cv-cell-add" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { const rr = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "cell", frameId: f.id, rect: { left: rr.left, top: rr.top, bottom: rr.bottom } }); }} title="Add people here"><Plus size={12} strokeWidth={2} /></button>}
+              {!present && (f.role === "group" || f.role === "rgroup") && sel.has(f.id) && <div className="cv-tint-row" onPointerDown={(e) => e.stopPropagation()}>{GROUP_COLORS.map((t) => <button key={t} className={`cv-tint ${f.color === t ? "cv-tint-on" : ""}`} style={{ background: t }} onClick={() => update(f.id, { color: t })} />)}</div>}
               {editingLabel === f.id
                 ? <input autoFocus className="cv-frame-input" defaultValue={f.label} onPointerDown={(e) => e.stopPropagation()} onBlur={(e) => { update(f.id, { label: e.target.value.trim() }); setEditingLabel(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditingLabel(null); }} placeholder="Name this box" />
                 : f.role !== "cell" && <div className={`cv-frame-label ${f.label ? "" : "cv-frame-label-empty"}`}>{f.label || "Double-click to name"}</div>}
@@ -602,23 +646,23 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
               </>}
             </div>);
         const cardEl = (c) => { const p = person(c.ref); const cat = catOf(c); const col = colorOf(c); const nm = p?.name || c.name || "Open role"; const missing = c.ref && source.ready && !p; return (
-            <div key={c.id} data-id={c.id} className={`cv-card cv-cat-${cat} ${c.lead ? "cv-lead" : ""} ${c.letGo ? "cv-letgo" : ""} ${sel.has(c.id) ? "cv-sel" : ""} ${linkFrom === c.id ? "cv-link-src" : ""} ${missing ? "cv-missing" : ""}`} style={{ left: c.x, top: c.y, width: CARD_W, height: CARD_H, "--c": col }} onPointerDown={(e) => onItemDown(e, c)} title={p ? `${p.title || ""}${p.managerName ? ` · reports to ${p.managerName}` : ""}` : ""}>
+            <div key={c.id} data-id={c.id} className={`cv-card cv-cat-${cat} ${c.lead ? "cv-lead" : ""} ${c.letGo ? "cv-letgo" : ""} ${sel.has(c.id) ? "cv-sel" : ""} ${linkFrom === c.id ? "cv-link-src" : ""} ${missing ? "cv-missing" : ""}`} onPointerDown={(e) => onItemDown(e, c)} style={{ left: c.x, top: c.y, width: CARD_W, height: CARD_H, "--c": col, cursor: present ? "default" : undefined }} title={p ? `${p.title || ""}${p.managerName ? ` · reports to ${p.managerName}` : ""}` : ""}>
               <span className="cv-avatar">{cat === "hire" && !c.name ? "?" : initials(nm)}</span>
               <span className="cv-text"><strong>{nm}</strong><em>{c.title || p?.title || (cat === "hire" ? "to be hired" : "")}</em></span>
-              {c.letGo && <span className="cv-flag" title="Flagged: to let go"><Flag size={10} strokeWidth={2.2} /> let go</span>}
+              {c.letGo && !present && <span className="cv-flag" title="Flagged: to let go"><Flag size={10} strokeWidth={2.2} /> let go</span>}
             </div>); };
-        const L = { main: [], top: [], left: [] }; frames.forEach((f) => L[layerOf(f)].push(frameEl(f))); const CL = { main: [], top: [], left: [] }; items.filter((i) => i.type === "card").forEach((c) => CL[layerOf(c)].push(cardEl(c)));
+        const L = { main: [], top: [], left: [] }; vFrames.forEach((f) => L[layerOf(f)].push(frameEl(f))); const CL = { main: [], top: [], left: [] }; vItems.filter((i) => i.type === "card").forEach((c) => CL[layerOf(c)].push(cardEl(c)));
         return (
       <div ref={cvRef} className={`cv-canvas ${spaceDown ? "cv-panning" : ""} ${linkFrom ? "cv-linking" : ""}`} onPointerDown={onCanvasDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
         <div className="cv-layer" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})` }}>
           <svg className="cv-links cv-autolinks" style={{ overflow: "visible" }}>
-            {frames.filter((f) => f.role === "cell").map((cell) => { const r = byId.get(cell.row), c = byId.get(cell.col); const g = c && byId.get(c.group); const col = g?.color || "#8a7d6c"; return (
+            {vFrames.filter((f) => f.role === "cell").map((cell) => { const r = vById.get(cell.row), c = vById.get(cell.col); const g = c && vById.get(c.group); const col = g?.color || "#8a7d6c"; return (
               <g key={cell.id}>
-                {r && cell.vspan > 1 && Array.from({ length: cell.vspan - 1 }, (_, k) => { const rr = byId.get(rowOrder[rowOrder.indexOf(r.id) + k + 1]); return rr ? <line key={k} x1={rr.x + rr.w} y1={rr.y + 30} x2={cell.x} y2={rr.y + 30} stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" /> : null; })}
-                {r && (() => { const hc = cell.headId && byId.get(cell.headId); if (!hc) return <line x1={r.x + r.w} y1={cell.y + 30} x2={cell.x} y2={cell.y + 30} stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" />;
+                {r && cell.vspan > 1 && Array.from({ length: cell.vspan - 1 }, (_, k) => { const rr = vById.get(rowOrder[rowOrder.indexOf(r.id) + k + 1]); return rr ? <line key={k} x1={rr.x + rr.w} y1={rr.y + 30} x2={cell.x} y2={rr.y + 30} stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" /> : null; })}
+                {r && (() => { const hc = cell.headId && vById.get(cell.headId); if (!hc) return <line x1={r.x + r.w} y1={cell.y + 30} x2={cell.x} y2={cell.y + 30} stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" />;
                   const x1 = hc.x + CARD_W, y1 = hc.y + CARD_H / 2, x2 = cell.x, y2 = cell.y + 30, xm = r.x + r.w + 10;
                   return <polyline points={`${x1},${y1} ${xm},${y1} ${xm},${y2} ${x2},${y2}`} fill="none" stroke="#8a7d6c" strokeWidth="1.5" strokeDasharray="3 4" />; })()}
-                {c && Array.from({ length: cell.span || 1 }, (_, k) => { const cc = byId.get(colOrder[colOrder.indexOf(c.id) + k]); if (!cc) return null; const gg = byId.get(cc.group); return <line key={k} x1={cc.x + cc.w / 2} y1={cc.y + cc.h} x2={cc.x + cc.w / 2} y2={cell.y} stroke={gg?.color || col} strokeWidth="1.5" strokeDasharray="3 4" />; })}
+                {c && Array.from({ length: cell.span || 1 }, (_, k) => { const cc = vById.get(colOrder[colOrder.indexOf(c.id) + k]); if (!cc) return null; const gg = vById.get(cc.group); return <line key={k} x1={cc.x + cc.w / 2} y1={cc.y + cc.h} x2={cc.x + cc.w / 2} y2={cell.y} stroke={gg?.color || col} strokeWidth="1.5" strokeDasharray="3 4" />; })}
               </g>); })}
           </svg>
           {L.main}
@@ -640,16 +684,16 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
           <div className="cv-layer cv-pinlayer" style={{ transform: `translate(${pinX}px, ${view.y}px) scale(${view.z})` }}>{L.left}{CL.left}</div>
           <div className="cv-pinbg cv-pinbg-corner" style={{ width: pinX + leftRight * view.z + 6, height: pinY + headerBottom * view.z + 6, opacity: view.y < PAD || view.x < PAD ? 1 : 0 }} />
         </>}
-        {items.length === 0 && <div className="cv-empty">A blank canvas. <strong>Start a matrix</strong> (verticals across, functions down, people where they meet) or add <strong>people</strong> and <strong>boxes</strong> freely and draw <strong>dotted lines</strong>. Drag to move, shift-click to select several, scroll to pan, ⌘-scroll to zoom.</div>}
+        {vItems.length === 0 && <div className="cv-empty">A blank canvas. <strong>Start a matrix</strong> (verticals across, functions down, people where they meet) or add <strong>people</strong> and <strong>boxes</strong> freely and draw <strong>dotted lines</strong>. Drag to move, shift-click to select several, scroll to pan, ⌘-scroll to zoom.</div>}
         {showLegend && (
           <div className="cv-legend" onPointerDown={(e) => e.stopPropagation()}>
             <div className="cv-legend-head">Legend <span>click a label to rename · swatch to recolour</span></div>
             {CAT_ORDER.map((k) => { const L = legend[k] || DEFAULT_LEGEND[k]; return (
               <div key={k} className="cv-legend-row">
-                <label className="cv-swatch" style={{ background: L.color }}><input type="color" value={L.color} onChange={(e) => setLegend(k, { color: e.target.value })} /></label>
-                <input className="cv-legend-label" value={L.label} onChange={(e) => setLegend(k, { label: e.target.value })} />
+                <label className="cv-swatch" style={{ background: L.color }}>{!present && <input type="color" value={L.color} onChange={(e) => setLegend(k, { color: e.target.value })} />}</label>
+                <input className="cv-legend-label" value={L.label} readOnly={present} onChange={(e) => !present && setLegend(k, { label: e.target.value })} />
               </div>); })}
-            <div className="cv-legend-row cv-legend-static"><span className="cv-flag"><Flag size={10} strokeWidth={2.2} /> let go</span><span className="cv-legend-text">flagged to let go (card menu)</span></div>
+            {!present && <div className="cv-legend-row cv-legend-static"><span className="cv-flag"><Flag size={10} strokeWidth={2.2} /> let go</span><span className="cv-legend-text">flagged to let go (card menu)</span></div>}
             {!doc.headRef && <div className="cv-legend-hint">Set the org head (top left) and levels colour themselves.</div>}
           </div>
         )}
@@ -744,6 +788,12 @@ const cvStyles = `
 .cv-pinlayer { z-index: 5; pointer-events: none; } .cv-pinlayer > * { pointer-events: auto; }
 .cv-pinbg { position: absolute; left: 0; top: 0; z-index: 4; background: #faf7ef; background-image: radial-gradient(circle, #d9d1be 1px, transparent 1.2px); background-size: 24px 24px; pointer-events: none; transition: opacity .12s; }
 .cv-pinbg-top { right: 0; box-shadow: 0 6px 12px -8px rgba(26,22,18,.3); } .cv-pinbg-left { bottom: 0; box-shadow: 6px 0 12px -8px rgba(26,22,18,.3); } .cv-pinbg-corner { z-index: 4; }
+.cv-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; height: 32px; background: #fffdf7; }
+.cv-seg button { border: none; background: transparent; padding: 0 12px; font-family: 'Iowan Old Style', Georgia, serif; font-size: 13px; color: var(--ink-soft); cursor: pointer; } .cv-seg button.on { background: var(--ink); color: var(--paper); }
+.cv-hint-inline { font-family: 'Iowan Old Style', Georgia, serif; font-size: 12.5px; font-style: italic; color: var(--ink-faint); margin-left: 4px; }
+.cv-clickable { cursor: pointer; } .cv-clickable:hover { box-shadow: 0 0 0 3px rgba(26,22,18,.14); } .cv-focus { box-shadow: 0 0 0 3px var(--ink); }
+.cv-count { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 34px; height: 34px; padding: 0 10px; border-radius: 999px; background: var(--ink); color: var(--paper); display: grid; place-items: center; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 13px; font-weight: 700; }
+.cv-cell-none { background: transparent; border-style: dashed; border-color: #e6dfcf; }
 .cv-marquee { position: absolute; border: 1px dashed var(--ink); background: rgba(26,22,18,.05); pointer-events: none; }
 .cv-empty { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); max-width: 520px; text-align: center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 15px; line-height: 1.6; color: var(--ink-faint); pointer-events: none; }
 .cv-legend { position: absolute; right: 18px; bottom: 18px; width: 290px; background: rgba(255,253,248,.96); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px 12px; font-family: 'Iowan Old Style', Georgia, serif; }
