@@ -228,7 +228,7 @@ function SlideView({ items, person, legend, catOf, title }) {
   const groups = items.filter((i) => i.role === "group").sort((a, b) => a.x - b.x), rgroups = items.filter((i) => i.role === "rgroup").sort((a, b) => a.y - b.y);
   const cols = items.filter((i) => i.role === "col").sort((a, b) => a.x - b.x), rows = items.filter((i) => i.role === "row").sort((a, b) => a.y - b.y);
   const cards = items.filter((i) => i.type === "card" && i.in); const inBox = (id) => cards.filter((c) => c.in === id);
-  const name = (c) => person(c.ref)?.name || c.name || "Open role";
+  const name = (c) => c.title || person(c.ref)?.title || c.name || person(c.ref)?.name || "Open role"; // roles, not people
   const heads = (id) => inBox(id).sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0));
   const cellOf = (r, c) => items.find((i) => i.role === "cell" && i.row === r.id && i.col === c.id);
   const covered = new Set(); items.filter((i) => i.role === "cell" && (i.span > 1 || i.vspan > 1)).forEach((cell) => { const ci = cols.findIndex((c) => c.id === cell.col), ri = rows.findIndex((r) => r.id === cell.row); for (let a = 0; a < (cell.vspan || 1); a++) for (let b = 0; b < (cell.span || 1); b++) if (a || b) covered.add(`${rows[ri + a]?.id}|${cols[ci + b]?.id}`); });
