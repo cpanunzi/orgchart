@@ -252,7 +252,7 @@ function SlideView({ items, person, legend, catOf, title }) {
                 <th className="sl-row">{r.label}{heads(r.id).slice(0, 2).map((h) => <Head key={h.id} c={h} />)}</th>
                 {cols.map((c) => { if (covered.has(`${r.id}|${c.id}`)) return null; const cell = cellOf(r, c); const ppl = cell ? inBox(cell.id) : []; const lead = ppl.find((x) => x.lead); return (
                   <td key={c.id} colSpan={cell?.span || 1} rowSpan={cell?.vspan || 1} className={`sl-cell ${ppl.length ? "sl-cell-on" : ""}`}>
-                    {cell?.label ? <span className="sl-head sl-caption">{cell.label}</span> : lead && <Head c={lead} />}
+                    {lead && <Head c={lead} />}{cell?.label && <span className="sl-head sl-caption">{cell.label}</span>}
                   </td>); })}
               </tr>)))}
           </tbody>
