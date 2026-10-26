@@ -224,7 +224,7 @@ export const canvasFromMatrix = (m) => {
 // count in every box. Scaled to fit whatever it's shown in — screenshot it or project it.
 function SlideView({ items, person, legend, catOf, title }) {
   const wrapRef = useRef(null), innerRef = useRef(null); const [scale, setScale] = useState(1);
-  useEffect(() => { const fitIt = () => { const w = wrapRef.current, n = innerRef.current; if (!w || !n) return; setScale(Math.min((w.clientWidth - 48) / n.offsetWidth, (w.clientHeight - 48) / n.offsetHeight, 1.4)); }; fitIt(); const t = setTimeout(fitIt, 150); window.addEventListener("resize", fitIt); return () => { clearTimeout(t); window.removeEventListener("resize", fitIt); }; }, [items]);
+  useEffect(() => { const fitIt = () => { const w = wrapRef.current, n = innerRef.current; if (!w || !n) return; const z = parseFloat(n.style.zoom) || 1; const r = n.getBoundingClientRect(); const nw = r.width / z, nh = r.height / z; if (!nw || !nh) return; setScale(Math.min((w.clientWidth - 48) / nw, (w.clientHeight - 48) / nh, 1.4)); }; fitIt(); const t = setTimeout(fitIt, 150); window.addEventListener("resize", fitIt); return () => { clearTimeout(t); window.removeEventListener("resize", fitIt); }; }, [items]);
   const groups = items.filter((i) => i.role === "group").sort((a, b) => a.x - b.x), rgroups = items.filter((i) => i.role === "rgroup").sort((a, b) => a.y - b.y);
   const cols = items.filter((i) => i.role === "col").sort((a, b) => a.x - b.x), rows = items.filter((i) => i.role === "row").sort((a, b) => a.y - b.y);
   const cards = items.filter((i) => i.type === "card" && i.in); const inBox = (id) => cards.filter((c) => c.in === id);
@@ -238,7 +238,7 @@ function SlideView({ items, person, legend, catOf, title }) {
   const Head = ({ c, big }) => c ? <span className={`sl-head ${big ? "sl-head-big" : ""} ${!c.ref ? "sl-head-hire" : ""}`}><i className="sl-dot" style={{ background: legend[catOf(c)]?.color }} />{name(c)}</span> : null;
   return (
     <div ref={wrapRef} className="sl-wrap">
-      <div ref={innerRef} className="sl-slide" style={{ transform: `scale(${scale})` }}>
+      <div ref={innerRef} className="sl-slide" style={{ zoom: scale }}>
         <div className="sl-title">{title}</div>
         <table className="sl-table">
           <thead>
@@ -839,7 +839,7 @@ const cvStyles = `
 .cv-count { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 34px; height: 34px; padding: 0 10px; border-radius: 999px; background: var(--ink); color: var(--paper); display: grid; place-items: center; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 13px; font-weight: 700; }
 .cv-cell-none { background: transparent; border-style: dashed; border-color: #e6dfcf; }
 .sl-wrap { flex: 1; min-height: 0; margin: 12px -28px 0; border-top: 1px solid var(--line); display: grid; place-items: center; overflow: auto; background: #efeadc; }
-.sl-slide { width: max-content; transform-origin: center; background: #fffdf8; border: 1px solid var(--line); box-shadow: 0 24px 60px -24px rgba(26,22,18,.4); padding: 28px 34px 30px; font-family: 'Iowan Old Style', Georgia, serif; }
+.sl-slide { width: max-content; background: #fffdf8; border: 1px solid var(--line); box-shadow: 0 24px 60px -24px rgba(26,22,18,.4); padding: 28px 34px 30px; font-family: 'Iowan Old Style', Georgia, serif; }
 .sl-title { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 14px; }
 .sl-table { border-collapse: separate; border-spacing: 6px; }
 .sl-table th, .sl-table td { vertical-align: top; text-align: left; }
