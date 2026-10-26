@@ -687,7 +687,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
         {vItems.length === 0 && <div className="cv-empty">A blank canvas. <strong>Start a matrix</strong> (verticals across, functions down, people where they meet) or add <strong>people</strong> and <strong>boxes</strong> freely and draw <strong>dotted lines</strong>. Drag to move, shift-click to select several, scroll to pan, ⌘-scroll to zoom.</div>}
         {showLegend && (
           <div className="cv-legend" onPointerDown={(e) => e.stopPropagation()}>
-            <div className="cv-legend-head">Legend <span>click a label to rename · swatch to recolour</span></div>
+            <div className="cv-legend-head">Legend {!present && <span>click a label to rename · swatch to recolour</span>}</div>
             {CAT_ORDER.map((k) => { const L = legend[k] || DEFAULT_LEGEND[k]; return (
               <div key={k} className="cv-legend-row">
                 <label className="cv-swatch" style={{ background: L.color }}>{!present && <input type="color" value={L.color} onChange={(e) => setLegend(k, { color: e.target.value })} />}</label>
