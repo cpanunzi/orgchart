@@ -106,8 +106,9 @@ const orderScaffold = (items, moved = new Set()) => {
 // "extended" = everything. Let-go flags never show. Built from a clone, so nothing is saved.
 const presentItems = (items, mode, focusId) => {
   const counts = new Map(); items.forEach((i) => { if (i.type === "card" && i.in) counts.set(i.in, (counts.get(i.in) || 0) + 1); });
+  const roleOf = new Map(items.filter((i) => i.type === "frame").map((f) => [f.id, f.role]));
   let keep = () => true;
-  if (mode === "overview") keep = () => false;
+  if (mode === "overview") keep = (c) => ["col", "row", "group", "rgroup"].includes(roleOf.get(c.in)); // heads only
   else if (mode === "focus" && focusId) {
     const f = items.find((i) => i.id === focusId); const colsOfGroup = f?.role === "group" ? new Set(items.filter((i) => i.role === "col" && i.group === f.id).map((c) => c.id)) : null;
     const rowsOfGroup = f?.role === "rgroup" ? new Set(items.filter((i) => i.role === "row" && i.group === f.id).map((r) => r.id)) : null;
@@ -219,6 +220,47 @@ export const canvasFromMatrix = (m) => {
   return { items: layoutMatrix(ensureCells(orderScaffold(transposeItems(layoutMatrix(all))))), links: [] };
 };
 
+// One-slide version of the matrix: bands and headers with their leads, a lead name or a people
+// count in every box. Scaled to fit whatever it's shown in — screenshot it or project it.
+function SlideView({ items, person, legend, catOf, title }) {
+  const wrapRef = useRef(null), innerRef = useRef(null); const [scale, setScale] = useState(1);
+  useEffect(() => { const fitIt = () => { const w = wrapRef.current, n = innerRef.current; if (!w || !n) return; setScale(Math.min((w.clientWidth - 48) / n.offsetWidth, (w.clientHeight - 48) / n.offsetHeight, 1.4)); }; fitIt(); window.addEventListener("resize", fitIt); return () => window.removeEventListener("resize", fitIt); }, [items]);
+  const groups = items.filter((i) => i.role === "group").sort((a, b) => a.x - b.x), rgroups = items.filter((i) => i.role === "rgroup").sort((a, b) => a.y - b.y);
+  const cols = items.filter((i) => i.role === "col").sort((a, b) => a.x - b.x), rows = items.filter((i) => i.role === "row").sort((a, b) => a.y - b.y);
+  const cards = items.filter((i) => i.type === "card" && i.in); const inBox = (id) => cards.filter((c) => c.in === id);
+  const name = (c) => person(c.ref)?.name || c.name || "Open role";
+  const heads = (id) => inBox(id).sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0));
+  const cellOf = (r, c) => items.find((i) => i.role === "cell" && i.row === r.id && i.col === c.id);
+  const covered = new Set(); items.filter((i) => i.role === "cell" && (i.span > 1 || i.vspan > 1)).forEach((cell) => { const ci = cols.findIndex((c) => c.id === cell.col), ri = rows.findIndex((r) => r.id === cell.row); for (let a = 0; a < (cell.vspan || 1); a++) for (let b = 0; b < (cell.span || 1); b++) if (a || b) covered.add(`${rows[ri + a]?.id}|${cols[ci + b]?.id}`); });
+  const colGroups = groups.map((g) => ({ g, cols: cols.filter((c) => c.group === g.id) })).filter((x) => x.cols.length); const loose = cols.filter((c) => !groups.some((g) => g.id === c.group)); if (loose.length) colGroups.push({ g: null, cols: loose });
+  const rowGroups = rgroups.map((g) => ({ g, rows: rows.filter((r) => r.group === g.id) })).filter((x) => x.rows.length); const looseR = rows.filter((r) => !rgroups.some((g) => g.id === r.group)); if (looseR.length) rowGroups.push({ g: null, rows: looseR });
+  const hasRG = rowGroups.some((x) => x.g);
+  const Head = ({ c, big }) => c ? <span className={`sl-head ${big ? "sl-head-big" : ""} ${!c.ref ? "sl-head-hire" : ""}`}><i className="sl-dot" style={{ background: legend[catOf(c)]?.color }} />{name(c)}</span> : null;
+  return (
+    <div ref={wrapRef} className="sl-wrap">
+      <div ref={innerRef} className="sl-slide" style={{ transform: `scale(${scale})` }}>
+        <div className="sl-title">{title}</div>
+        <table className="sl-table">
+          <thead>
+            {colGroups.some((x) => x.g) && <tr>{hasRG && <th className="sl-corner" />}<th className="sl-corner" />{colGroups.map(({ g, cols: gc }) => <th key={g?.id || "loose"} colSpan={gc.length} className="sl-band" style={{ background: g?.color || "transparent" }}>{g && <>{g.label}{heads(g.id).slice(0, 2).map((c) => <Head key={c.id} c={c} big />)}</>}</th>)}</tr>}
+            <tr>{hasRG && <th className="sl-corner" />}<th className="sl-corner" />{cols.map((c) => <th key={c.id} className="sl-col">{c.label}{heads(c.id).slice(0, 2).map((h) => <Head key={h.id} c={h} />)}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rowGroups.map(({ g, rows: gr }) => gr.map((r, ri) => (
+              <tr key={r.id}>
+                {hasRG && ri === 0 && <th rowSpan={gr.length} className="sl-rband" style={{ background: g?.color || "transparent", color: g ? "#fff" : "inherit" }}>{g?.label}{g && heads(g.id).slice(0, 2).map((c) => <Head key={c.id} c={c} big />)}</th>}
+                <th className="sl-row">{r.label}{heads(r.id).slice(0, 2).map((h) => <Head key={h.id} c={h} />)}</th>
+                {cols.map((c) => { if (covered.has(`${r.id}|${c.id}`)) return null; const cell = cellOf(r, c); const ppl = cell ? inBox(cell.id) : []; const lead = ppl.find((x) => x.lead); return (
+                  <td key={c.id} colSpan={cell?.span || 1} rowSpan={cell?.vspan || 1} className={`sl-cell ${ppl.length ? "sl-cell-on" : ""}`}>
+                    {lead && <Head c={lead} />}{ppl.length > (lead ? 1 : 0) && <span className="sl-count">{lead ? `+${ppl.length - 1}` : ppl.length}</span>}
+                  </td>); })}
+              </tr>)))}
+          </tbody>
+        </table>
+      </div>
+    </div>);
+}
+
 export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const [doc, setDocState] = useState(null);
   const [name, setName] = useState(chartName || "");
@@ -241,9 +283,9 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const [spaceDown, setSpaceDown] = useState(false);
   // present mode (?present=1): read-only, shareable; overview → click a department → extended
   const [present, setPresentState] = useState(() => new URLSearchParams(window.location.search).get("present") === "1");
-  const [pmode, setPmode] = useState("overview");  // "overview" | "focus" | "extended"
+  const [pmode, setPmode] = useState("slide");  // "overview" | "focus" | "extended"
   const [focusId, setFocusId] = useState(null);
-  const setPresent = (on) => { const url = new URL(window.location.href); if (on) url.searchParams.set("present", "1"); else url.searchParams.delete("present"); window.history.replaceState(null, "", url.toString()); setPresentState(on); setPmode("overview"); setFocusId(null); setSel(new Set()); setMenu(null); setPicker(null); setTimeout(fit, 60); };
+  const setPresent = (on) => { const url = new URL(window.location.href); if (on) url.searchParams.set("present", "1"); else url.searchParams.delete("present"); window.history.replaceState(null, "", url.toString()); setPresentState(on); setPmode("slide"); setFocusId(null); setSel(new Set()); setMenu(null); setPicker(null); setTimeout(fit, 60); };
   const [freeze, setFreezeState] = useState(() => { try { return localStorage.getItem(`atelier-canvas-freeze:${chartId}`) !== "off"; } catch { return true; } });
   const setFreeze = (v) => { setFreezeState(v); try { localStorage.setItem(`atelier-canvas-freeze:${chartId}`, v ? "on" : "off"); } catch { /* ignore */ } };
   const [dragIds, setDragIds] = useState(() => new Set());
@@ -353,7 +395,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
   const zoomBy = (f) => { const r = cvRef.current.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, f); };
   const shownRef = useRef(null);
   const fit = () => { const its = shownRef.current || docRef.current?.items || []; if (!its.length || !cvRef.current) return; const rs = its.map(rectOf); const x0 = Math.min(...rs.map((r) => r.x)) - 40, y0 = Math.min(...rs.map((r) => r.y)) - 40, x1 = Math.max(...rs.map((r) => r.x + r.w)) + 40, y1 = Math.max(...rs.map((r) => r.y + r.h)) + 40; const r = cvRef.current.getBoundingClientRect(); const z = Math.min(1.25, r.width / (x1 - x0), r.height / (y1 - y0)); setView({ z, x: (r.width - (x1 - x0) * z) / 2 - x0 * z, y: (r.height - (y1 - y0) * z) / 2 - y0 * z }); };
-  const canvasReady = !!doc && !tooNew;
+  const canvasReady = !!doc && !tooNew && !(present && pmode === "slide");
   useEffect(() => {
     const cv = cvRef.current; if (!cv) return;
     const onWheel = (e) => { e.preventDefault(); if (e.ctrlKey || e.metaKey) zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01)); else setView((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY })); };
@@ -362,7 +404,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasReady]);
   useEffect(() => { if (canvasReady && (docRef.current?.items || []).length) setTimeout(fit, 50); }, [canvasReady]); // eslint-disable-line
-  useEffect(() => { if (present) setTimeout(fit, 60); }, [present, pmode, focusId]); // eslint-disable-line
+  useEffect(() => { if (present && pmode !== "slide") setTimeout(fit, 60); }, [present, pmode, focusId]); // eslint-disable-line
 
   // ---- keyboard -----------------------------------------------------------------------------
   useEffect(() => {
@@ -564,10 +606,11 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
           <div className="cv-tools">
             {pmode === "focus" && <button className="tb" onClick={() => { setPmode("overview"); setFocusId(null); }}><BackIcon size={14} strokeWidth={1.8} /> Overview</button>}
             <div className="cv-seg">
+              <button className={pmode === "slide" ? "on" : ""} onClick={() => { setPmode("slide"); setFocusId(null); }}>Slide</button>
               <button className={pmode === "overview" ? "on" : ""} onClick={() => { setPmode("overview"); setFocusId(null); }}>Overview</button>
               <button className={pmode === "extended" ? "on" : ""} onClick={() => { setPmode("extended"); setFocusId(null); }}>Extended</button>
             </div>
-            <span className="cv-hint-inline">{pmode === "overview" ? "click a department to open it" : pmode === "focus" ? (vById.get(focusId)?.label || "") : "everyone, every box"}</span>
+            <span className="cv-hint-inline">{pmode === "slide" ? "one screen, scaled to fit" : pmode === "overview" ? "click a department to open it" : pmode === "focus" ? (vById.get(focusId)?.label || "") : "everyone, every box"}</span>
           </div>
         ) : (
         <div className="cv-tools">
@@ -652,6 +695,7 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
               {c.letGo && !present && <span className="cv-flag" title="Flagged: to let go"><Flag size={10} strokeWidth={2.2} /> let go</span>}
             </div>); };
         const L = { main: [], top: [], left: [] }; vFrames.forEach((f) => L[layerOf(f)].push(frameEl(f))); const CL = { main: [], top: [], left: [] }; vItems.filter((i) => i.type === "card").forEach((c) => CL[layerOf(c)].push(cardEl(c)));
+        if (present && pmode === "slide") return <SlideView items={items} person={person} legend={legend} catOf={catOf} title={name} />;
         return (
       <div ref={cvRef} className={`cv-canvas ${spaceDown ? "cv-panning" : ""} ${linkFrom ? "cv-linking" : ""}`} onPointerDown={onCanvasDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
         <div className="cv-layer" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})` }}>
@@ -794,6 +838,24 @@ const cvStyles = `
 .cv-clickable { cursor: pointer; } .cv-clickable:hover { box-shadow: 0 0 0 3px rgba(26,22,18,.14); } .cv-focus { box-shadow: 0 0 0 3px var(--ink); }
 .cv-count { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 34px; height: 34px; padding: 0 10px; border-radius: 999px; background: var(--ink); color: var(--paper); display: grid; place-items: center; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 13px; font-weight: 700; }
 .cv-cell-none { background: transparent; border-style: dashed; border-color: #e6dfcf; }
+.sl-wrap { flex: 1; min-height: 0; margin: 12px -28px 0; border-top: 1px solid var(--line); display: grid; place-items: center; overflow: hidden; background: #efeadc; }
+.sl-slide { transform-origin: center; background: #fffdf8; border: 1px solid var(--line); box-shadow: 0 24px 60px -24px rgba(26,22,18,.4); padding: 28px 34px 30px; font-family: 'Iowan Old Style', Georgia, serif; }
+.sl-title { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 14px; }
+.sl-table { border-collapse: separate; border-spacing: 6px; }
+.sl-table th, .sl-table td { vertical-align: top; text-align: left; }
+.sl-corner { background: transparent; }
+.sl-band { color: #fff; text-align: center !important; padding: 7px 12px; border-radius: 9px; font-size: 14px; font-weight: 700; }
+.sl-band .sl-head { color: #fff; background: rgba(255,255,255,.16); } .sl-band .sl-dot { background: #fff !important; }
+.sl-col { min-width: 150px; max-width: 190px; padding: 8px 10px 9px; border-radius: 8px; background: #f3eee1; font-size: 13.5px; font-weight: 700; line-height: 1.2; }
+.sl-row { min-width: 160px; max-width: 200px; padding: 8px 10px 9px; border-radius: 8px; background: #f3eee1; font-size: 13px; font-weight: 700; line-height: 1.2; }
+.sl-rband { width: 120px; padding: 10px 10px; border-radius: 9px; font-size: 12.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; vertical-align: top; }
+.sl-rband .sl-head { color: #fff; background: rgba(255,255,255,.16); text-transform: none; letter-spacing: 0; } .sl-rband .sl-dot { background: #fff !important; }
+.sl-cell { min-width: 150px; height: 52px; padding: 6px 8px; border: 1.5px dashed #e3dccb; border-radius: 8px; font-size: 12.5px; }
+.sl-cell-on { border-style: solid; border-color: #d6cdb8; background: #fff; }
+.sl-head { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-weight: 500; font-size: 12.5px; color: var(--ink); background: #fffdf8; border: 1px solid #e3dccb; border-radius: 999px; padding: 2px 9px 2px 6px; width: max-content; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sl-head-hire { border-style: dashed; font-style: italic; color: var(--ink-soft); } .sl-head-big { font-size: 13px; }
+.sl-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.sl-count { display: inline-block; margin-top: 5px; margin-left: 2px; padding: 1px 8px; border-radius: 999px; background: var(--ink); color: var(--paper); font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 11px; font-weight: 700; }
 .cv-marquee { position: absolute; border: 1px dashed var(--ink); background: rgba(26,22,18,.05); pointer-events: none; }
 .cv-empty { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); max-width: 520px; text-align: center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 15px; line-height: 1.6; color: var(--ink-faint); pointer-events: none; }
 .cv-legend { position: absolute; right: 18px; bottom: 18px; width: 290px; background: rgba(255,253,248,.96); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px 12px; font-family: 'Iowan Old Style', Georgia, serif; }
