@@ -252,7 +252,7 @@ function SlideView({ items, person, legend, catOf, title }) {
                 <th className="sl-row">{r.label}{heads(r.id).slice(0, 2).map((h) => <Head key={h.id} c={h} />)}</th>
                 {cols.map((c) => { if (covered.has(`${r.id}|${c.id}`)) return null; const cell = cellOf(r, c); const ppl = cell ? inBox(cell.id) : []; const lead = ppl.find((x) => x.lead); return (
                   <td key={c.id} colSpan={cell?.span || 1} rowSpan={cell?.vspan || 1} className={`sl-cell ${ppl.length ? "sl-cell-on" : ""}`}>
-                    {lead && <Head c={lead} />}
+                    {cell?.label ? <span className="sl-head sl-caption">{cell.label}</span> : lead && <Head c={lead} />}
                   </td>); })}
               </tr>)))}
           </tbody>
@@ -678,14 +678,14 @@ export default function CanvasBoard({ chartId, chartName, onBack, onRenamed }) {
         const layerOf = (it) => (!pinned || dragIds.has(it.id)) ? "main" : pinLayerOf(it, vItems);
         const frameEl = (f) => (
             <div key={f.id} data-id={f.id} className={`cv-frame ${f.role ? `cv-${f.role}` : ""} ${sel.has(f.id) ? "cv-sel" : ""} ${present && ["col", "row", "group", "rgroup"].includes(f.role) ? "cv-clickable" : ""} ${present && focusId === f.id ? "cv-focus" : ""} ${present && f.role === "cell" && f.count === 0 ? "cv-cell-none" : ""}`} style={{ left: f.x, top: f.y, width: f.w, height: f.h, background: f.role === "group" ? f.color : f.role === "col" ? "#fffdf8" : f.role ? undefined : (f.tint || TINTS[0]), "--g": f.role === "col" ? (vById.get(f.group)?.color || "#8a7d6c") : f.color }}
-              onPointerDown={(e) => onItemDown(e, f)} onDoubleClick={(e) => { e.stopPropagation(); if (!present && f.role !== "cell") setEditingLabel(f.id); }}>
+              onPointerDown={(e) => onItemDown(e, f)} onDoubleClick={(e) => { e.stopPropagation(); if (!present) setEditingLabel(f.id); }}>
               {present && f.role === "cell" && pmode !== "extended" && !vItems.some((i) => i.type === "card" && i.in === f.id) && f.count > 0 && <span className="cv-count" title={`${f.count} ${f.count === 1 ? "person" : "people"}`}>{f.count}</span>}
               {!present && f.role === "cell" && <button className="cv-cell-add" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { const rr = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "cell", frameId: f.id, rect: { left: rr.left, top: rr.top, bottom: rr.bottom } }); }} title="Add people here"><Plus size={12} strokeWidth={2} /></button>}
               {!present && (f.role === "rgroup" || f.role === "row" || f.role === "col" || f.role === "group") && <button className="cv-cell-add" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { const rr = e.currentTarget.getBoundingClientRect(); setMenu(null); setPicker({ mode: "cell", frameId: f.id, rect: { left: rr.left, top: rr.top, bottom: rr.bottom } }); }} title="Add people here"><Plus size={12} strokeWidth={2} /></button>}
               {!present && (f.role === "group" || f.role === "rgroup") && sel.has(f.id) && <div className="cv-tint-row" onPointerDown={(e) => e.stopPropagation()}>{GROUP_COLORS.map((t) => <button key={t} className={`cv-tint ${f.color === t ? "cv-tint-on" : ""}`} style={{ background: t }} onClick={() => update(f.id, { color: t })} />)}</div>}
               {editingLabel === f.id
-                ? <input autoFocus className="cv-frame-input" defaultValue={f.label} onPointerDown={(e) => e.stopPropagation()} onBlur={(e) => { update(f.id, { label: e.target.value.trim() }); setEditingLabel(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditingLabel(null); }} placeholder="Name this box" />
-                : f.role !== "cell" && <div className={`cv-frame-label ${f.label ? "" : "cv-frame-label-empty"}`}>{f.label || "Double-click to name"}</div>}
+                ? <input autoFocus className="cv-frame-input" defaultValue={f.label} onPointerDown={(e) => e.stopPropagation()} onBlur={(e) => { update(f.id, { label: e.target.value.trim() }); setEditingLabel(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditingLabel(null); }} placeholder={f.role === "cell" ? "Caption for the slide (e.g. R&D engineers)" : "Name this box"} />
+                : f.role === "cell" ? (f.label && <div className="cv-cell-caption">{f.label}</div>) : <div className={`cv-frame-label ${f.label ? "" : "cv-frame-label-empty"}`}>{f.label || "Double-click to name"}</div>}
               {sel.has(f.id) && !f.role && <>
                 <div className="cv-tint-row" onPointerDown={(e) => e.stopPropagation()}>{TINTS.map((t) => <button key={t} className={`cv-tint ${f.tint === t ? "cv-tint-on" : ""}`} style={{ background: t }} onClick={() => update(f.id, { tint: t })} />)}</div>
                 <div className="cv-resize" onPointerDown={(e) => onResizeDown(e, f)} />
@@ -860,6 +860,8 @@ const cvStyles = `
 .sl-head-hire { border-style: dashed; font-style: italic; color: var(--ink-soft); } .sl-head-big { font-size: 13px; }
 .sl-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .sl-count { display: inline-block; margin-top: 5px; margin-left: 2px; padding: 1px 8px; border-radius: 999px; background: var(--ink); color: var(--paper); font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 11px; font-weight: 700; }
+.cv-cell-caption { position: absolute; right: 8px; top: 6px; font-family: 'Iowan Old Style', Georgia, serif; font-size: 10.5px; font-style: italic; color: var(--ink-faint); pointer-events: none; }
+.sl-caption { font-style: italic; }
 .cv-marquee { position: absolute; border: 1px dashed var(--ink); background: rgba(26,22,18,.05); pointer-events: none; }
 .cv-empty { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); max-width: 520px; text-align: center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 15px; line-height: 1.6; color: var(--ink-faint); pointer-events: none; }
 .cv-legend { position: absolute; right: 18px; bottom: 18px; width: 290px; background: rgba(255,253,248,.96); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px 12px; font-family: 'Iowan Old Style', Georgia, serif; }
